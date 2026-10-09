@@ -1170,6 +1170,7 @@ impl App {
                 zip: self.state.config.ue4ssl_zip_path.clone(),
                 confirmed_native_dlls: self.state.config.confirmed_native_dlls.clone(),
             },
+            self.state.dirs.data_dir.clone(),
             self.tx.clone(),
             ctx.clone(),
         ));

@@ -295,8 +295,95 @@ pub fn native_confirmation_text(mods: &[UnconfirmedNativeMod]) -> String {
     format!(
         "This profile installs native DLL mods: {names}.\n\
          Native code runs with the game's full permissions. \
-         Only install DLLs from sources you trust."
+         Only install DLLs from sources you trust.\n\
+         If it isn't set up yet, the UE4SS.Lite runtime (UE4SSL.zip) will be downloaded from \
+         MintCat's release server."
     )
+}
+
+/// Where an automatically downloaded UE4SSL.zip is kept.
+pub fn default_zip_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("ue4ssl").join("UE4SSL.zip")
+}
+
+/// Makes sure a valid UE4SSL.zip is available if any of `mod_files` has a DLL or JS part.
+///
+/// Returns `Ok(None)` when nothing has to change (no UE4SSL mods, or `configured` is a valid
+/// UE4SSL.zip). Otherwise downloads it to [`default_zip_path`] (reusing an earlier download if it
+/// is still valid) and returns the new path, which the caller should store in the config.
+pub async fn ensure_zip(
+    mod_files: &[PathBuf],
+    configured: Option<&Path>,
+    data_dir: &Path,
+    progress: impl FnMut(u64, Option<u64>),
+) -> Result<Option<PathBuf>, IntegrationError> {
+    if configured.is_some_and(|p| validate_ue4ssl_zip(p).is_ok()) {
+        return Ok(None);
+    }
+    let files = mod_files.to_vec();
+    let needed = tokio::task::spawn_blocking(move || -> Result<bool, IntegrationError> {
+        for path in &files {
+            if scan_mod_kind(path)?.any() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    })
+    .await
+    .map_err(|e| generic(e.to_string()))??;
+    if !needed {
+        return Ok(None);
+    }
+    let dest = default_zip_path(data_dir);
+    if validate_ue4ssl_zip(&dest).is_ok() {
+        info!("using previously downloaded {}", dest.display());
+        return Ok(Some(dest));
+    }
+    match configured {
+        Some(p) => warn!(
+            "configured UE4SSL.zip {} is missing or invalid; downloading it",
+            p.display()
+        ),
+        None => info!("profile has UE4SSL mods and no UE4SSL.zip is configured; downloading it"),
+    }
+    match download_ue4ssl_with_progress(&dest, progress).await {
+        Ok(version) => {
+            info!("downloaded UE4SSL {version} to {}", dest.display());
+            Ok(Some(dest))
+        }
+        Err(e) => Err(generic(format!(
+            "this profile has UE4SSL (native DLL or JS) mods, and downloading the UE4SS.Lite \
+             runtime from MintCat's release server failed ({}). Check your internet connection \
+             and try again, or set a UE4SSL.zip you already have under Settings > UE4SSL.zip \
+             (browse).",
+            match e {
+                IntegrationError::GenericError { msg } => msg,
+                e => e.to_string(),
+            }
+        ))),
+    }
+}
+
+/// Fails with [`IntegrationError::NativeModsNeedConfirmation`] if any mod has a native DLL that
+/// was not confirmed yet. Runs on a blocking thread (it hashes the DLLs).
+pub async fn check_native_confirmed(
+    mods: Vec<(String, PathBuf)>,
+    confirmed: BTreeSet<String>,
+) -> Result<(), IntegrationError> {
+    let unconfirmed = tokio::task::spawn_blocking(move || {
+        unconfirmed_native_mods(
+            mods.iter()
+                .map(|(name, path)| (name.as_str(), path.as_path())),
+            &confirmed,
+        )
+    })
+    .await
+    .map_err(|e| generic(e.to_string()))??;
+    if unconfirmed.is_empty() {
+        Ok(())
+    } else {
+        Err(IntegrationError::NativeModsNeedConfirmation { mods: unconfirmed })
+    }
 }
 
 /// Checks that `path` is a zip that looks like a UE4SSL runtime package.
@@ -648,6 +735,15 @@ fn resolve_ue4ssl_asset(
 /// Downloads UE4SSL.zip from MintCat's release server to `dest`, checking its size, md5 and
 /// contents. Returns the version string from the manifest.
 pub async fn download_ue4ssl(dest: &Path) -> Result<String, IntegrationError> {
+    download_ue4ssl_with_progress(dest, |_, _| {}).await
+}
+
+/// [`download_ue4ssl`], calling `progress(bytes_done, bytes_total)` while downloading.
+pub async fn download_ue4ssl_with_progress(
+    dest: &Path,
+    mut progress: impl FnMut(u64, Option<u64>),
+) -> Result<String, IntegrationError> {
+    use futures::TryStreamExt as _;
     let client = reqwest::Client::new();
     let fetch_err = |e: reqwest::Error| generic(format!("UE4SSL download failed: {e}"));
     let items: Vec<ManifestItem> = client
@@ -661,15 +757,20 @@ pub async fn download_ue4ssl(dest: &Path) -> Result<String, IntegrationError> {
         .map_err(fetch_err)?;
     let (url, size, md5, version) = resolve_ue4ssl_asset(MINTCAT_MANIFEST_URL, &items)?;
     info!("downloading UE4SSL {version} from {url}");
-    let data = client
+    let response = client
         .get(&url)
         .send()
         .await
         .and_then(|r| r.error_for_status())
-        .map_err(fetch_err)?
-        .bytes()
-        .await
         .map_err(fetch_err)?;
+    let total = size.or(response.content_length());
+    let mut data = Vec::with_capacity(total.unwrap_or(0) as usize);
+    let mut stream = response.bytes_stream();
+    progress(0, total);
+    while let Some(chunk) = stream.try_next().await.map_err(fetch_err)? {
+        data.extend_from_slice(&chunk);
+        progress(data.len() as u64, total);
+    }
     if let Some(size) = size
         && size != data.len() as u64
     {
@@ -857,6 +958,40 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn ensure_zip_without_download() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("data");
+        let pak = tmp.path().join("pak.zip");
+        fs::write(&pak, make_zip(&[("Mod.pak", b"PAK")])).unwrap();
+        let native = tmp.path().join("native.zip");
+        fs::write(&native, make_zip(&[("dll/main.dll", b"DLL")])).unwrap();
+        let no_progress = |_: u64, _: Option<u64>| panic!("must not download");
+
+        // pak-only profile: nothing to do, even with no zip configured
+        let r = ensure_zip(std::slice::from_ref(&pak), None, &data, no_progress).await;
+        assert_eq!(r.unwrap(), None);
+
+        // a valid configured zip is used as is
+        let configured = write_runtime_zip(tmp.path());
+        let r = ensure_zip(
+            std::slice::from_ref(&native),
+            Some(&configured),
+            &data,
+            no_progress,
+        )
+        .await;
+        assert_eq!(r.unwrap(), None);
+
+        // an earlier automatic download is reused when the configured path is gone
+        let dest = default_zip_path(&data);
+        fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        fs::copy(&configured, &dest).unwrap();
+        let missing = tmp.path().join("missing.zip");
+        let r = ensure_zip(&[pak, native], Some(&missing), &data, no_progress).await;
+        assert_eq!(r.unwrap(), Some(dest));
     }
 
     #[test]

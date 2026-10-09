@@ -103,7 +103,7 @@ pub fn is_drg_pak<P: AsRef<Path>>(path: P) -> Result<(), MintError> {
 
 pub async fn resolve_unordered_and_integrate<P: AsRef<Path>>(
     game_path: P,
-    state: &State,
+    state: &mut State,
     mod_specs: &[ModSpecification],
     update: bool,
 ) -> Result<(), IntegrationError> {
@@ -142,6 +142,31 @@ pub async fn resolve_unordered_and_integrate<P: AsRef<Path>>(
 
     info!("fetching mods...");
     let paths = state.store.fetch_mods(&urls, update, None).await?;
+
+    // ask about native DLLs before downloading anything for them
+    ue4ssl::check_native_confirmed(
+        to_integrate
+            .iter()
+            .map(|m| m.name.clone())
+            .zip(paths.iter().cloned())
+            .collect(),
+        state.config.confirmed_native_dlls.clone(),
+    )
+    .await?;
+    if let Some(zip) = ue4ssl::ensure_zip(
+        &paths,
+        state.config.ue4ssl_zip_path.as_deref(),
+        &state.dirs.data_dir,
+        |_, _| {},
+    )
+    .await?
+    {
+        state.config.ue4ssl_zip_path = Some(zip);
+        state
+            .config
+            .save()
+            .map_err(|e| IntegrationError::GenericError { msg: e.to_string() })?;
+    }
 
     integrate::integrate(
         game_path,

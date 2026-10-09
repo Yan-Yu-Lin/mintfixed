@@ -46,6 +46,8 @@ pub enum Message {
     SelfUpdate(SelfUpdate),
     FetchSelfUpdateProgress(FetchSelfUpdateProgress),
     DownloadUe4ssl(DownloadUe4ssl),
+    Ue4sslZipProgress(Ue4sslZipProgress),
+    Ue4sslZipReady(Ue4sslZipReady),
 }
 
 impl Message {
@@ -60,6 +62,8 @@ impl Message {
             Self::SelfUpdate(msg) => msg.receive(app),
             Self::FetchSelfUpdateProgress(msg) => msg.receive(app),
             Self::DownloadUe4ssl(msg) => msg.receive(app),
+            Self::Ue4sslZipProgress(msg) => msg.receive(app),
+            Self::Ue4sslZipReady(msg) => msg.receive(app),
         }
     }
 }
@@ -192,6 +196,7 @@ impl Integrate {
         fsd_pak: PathBuf,
         config: MetaConfig,
         ue4ssl: Ue4sslOptions,
+        data_dir: PathBuf,
         tx: Sender<Message>,
         ctx: egui::Context,
     ) -> MessageHandle<HashMap<ModSpecification, SpecFetchProgress>> {
@@ -206,6 +211,7 @@ impl Integrate {
                     fsd_pak,
                     config,
                     ue4ssl,
+                    data_dir,
                     rid,
                     tx.clone(),
                 )
@@ -265,7 +271,7 @@ impl DownloadUe4ssl {
         let rid = app.request_counter.next();
         let tx = app.tx.clone();
         let ctx = ctx.clone();
-        let path = app.state.dirs.data_dir.join("ue4ssl").join("UE4SSL.zip");
+        let path = crate::ue4ssl::default_zip_path(&app.state.dirs.data_dir);
         let handle = tokio::spawn(async move {
             let result = crate::ue4ssl::download_ue4ssl(&path).await;
             tx.send(Message::DownloadUe4ssl(Self { rid, path, result }))
@@ -300,6 +306,50 @@ impl DownloadUe4ssl {
                     app.last_action = Some(LastAction::failure(e.to_string()));
                 }
             }
+        }
+    }
+}
+
+/// Progress of the UE4SSL.zip download that an install starts by itself.
+#[derive(Debug)]
+pub struct Ue4sslZipProgress {
+    rid: RequestID,
+    done: u64,
+    total: Option<u64>,
+}
+
+impl Ue4sslZipProgress {
+    fn receive(self, app: &mut App) {
+        if Some(self.rid) == app.integrate_rid.as_ref().map(|r| r.rid) {
+            let mb = |b: u64| b as f64 / 1_000_000.0;
+            let msg = match self.total {
+                Some(total) => format!(
+                    "downloading UE4SS.Lite runtime (UE4SSL.zip)… {:.1} / {:.1} MB",
+                    mb(self.done),
+                    mb(total)
+                ),
+                None => format!(
+                    "downloading UE4SS.Lite runtime (UE4SSL.zip)… {:.1} MB",
+                    mb(self.done)
+                ),
+            };
+            app.last_action = Some(LastAction::success(msg));
+        }
+    }
+}
+
+/// An install downloaded (or found a previous download of) UE4SSL.zip; remember it.
+#[derive(Debug)]
+pub struct Ue4sslZipReady {
+    path: PathBuf,
+}
+
+impl Ue4sslZipReady {
+    fn receive(self, app: &mut App) {
+        app.state.config.ue4ssl_zip_path = Some(self.path.clone());
+        app.state.config.save().unwrap();
+        if let Some(window) = &mut app.settings_window {
+            window.set_ue4ssl_zip_path(&self.path);
         }
     }
 }
@@ -430,7 +480,8 @@ async fn integrate_async(
     mod_specs: Vec<ModSpecification>,
     fsd_pak: PathBuf,
     config: MetaConfig,
-    ue4ssl: Ue4sslOptions,
+    mut ue4ssl: Ue4sslOptions,
+    data_dir: PathBuf,
     rid: RequestID,
     message_tx: Sender<Message>,
 ) -> Result<(), IntegrationError> {
@@ -453,10 +504,12 @@ async fn integrate_async(
 
     let (tx, mut rx) = mpsc::channel::<FetchProgress>(10);
 
+    let progress_tx = message_tx.clone();
+    let progress_ctx = ctx.clone();
     tokio::spawn(async move {
         while let Some(progress) = rx.recv().await {
             if let Some(spec) = res_map.get(progress.resolution()) {
-                message_tx
+                progress_tx
                     .send(Message::FetchModProgress(FetchModProgress {
                         rid,
                         spec: spec.clone(),
@@ -464,12 +517,45 @@ async fn integrate_async(
                     }))
                     .await
                     .unwrap();
-                ctx.request_repaint();
+                progress_ctx.request_repaint();
             }
         }
     });
 
     let paths = store.fetch_mods_ordered(&urls, update, Some(tx)).await?;
+
+    // ask about native DLLs before downloading anything for them
+    crate::ue4ssl::check_native_confirmed(
+        to_integrate
+            .iter()
+            .map(|m| m.name.clone())
+            .zip(paths.iter().cloned())
+            .collect(),
+        ue4ssl.confirmed_native_dlls.clone(),
+    )
+    .await?;
+    let mut last_report = 0;
+    let zip = crate::ue4ssl::ensure_zip(&paths, ue4ssl.zip.as_deref(), &data_dir, |done, total| {
+        // report every ~256 KiB, and at the end
+        if done == 0 || done - last_report >= 256 * 1024 || Some(done) == total {
+            last_report = done;
+            let _ = message_tx.try_send(Message::Ue4sslZipProgress(Ue4sslZipProgress {
+                rid,
+                done,
+                total,
+            }));
+            ctx.request_repaint();
+        }
+    })
+    .await?;
+    if let Some(zip) = zip {
+        ue4ssl.zip = Some(zip.clone());
+        message_tx
+            .send(Message::Ue4sslZipReady(Ue4sslZipReady { path: zip }))
+            .await
+            .unwrap();
+        ctx.request_repaint();
+    }
 
     tokio::task::spawn_blocking(move || {
         crate::integrate::integrate(

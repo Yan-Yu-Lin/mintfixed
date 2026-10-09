@@ -11,16 +11,23 @@ If you'd like to build it yourself from the original mint-repo, take a look at m
 mint can also install mods for [UE4SS.Lite](https://github.com/iris-cat-dev/UE4SS.Lite)
 ("UE4SSL"), using the same folder layout as [MintCat](https://github.com/iris-cat-dev/mintcat).
 
+Quick start: run mint, set the DRG pak in the settings if it wasn't found, drop the mod `.zip`
+onto the window (or paste its path into the "Add mod..." field), press **Install mods**, and
+confirm the native DLL prompt. The UE4SS.Lite runtime is downloaded automatically the first time.
+
 - **Opt-in.** Nothing changes for profiles that only contain `.pak` mods: no extra files are
   written and the merged `mods_P.pak` is built exactly as before. UE4SSL support only does
   anything when a mod `.zip` contains a native DLL or a JS mod.
 - **mint bundles no runtime.** The UE4SS.Lite loader (`UE4SSL.zip`) is not part of mint (it has no
-  license). In the settings window (cogwheel) set the path to a `UE4SSL.zip` you already have (MintCat
-  keeps one in its cache, e.g. `~/.cache/com.mint.cat/UE4SSL.zip` on Linux), or press **download**
-  to fetch it from MintCat's release server
-  (`https://yuri-oss-sg.oss-ap-southeast-1.aliyuncs.com/update.json`); the download is checked
-  against the published size and md5. A profile with DLL/JS mods and no `UE4SSL.zip` is refused
-  before anything is written.
+  license). When you install a profile with DLL/JS mods and no valid `UE4SSL.zip` is set, mint
+  downloads it from MintCat's release server
+  (`https://yuri-oss-sg.oss-ap-southeast-1.aliyuncs.com/update.json`) into its data directory,
+  checks it against the published size and md5, remembers it, and continues the install (the
+  status bar shows the progress). If that fails (e.g. offline), nothing is written to the game and
+  the error says so; you can then set a `UE4SSL.zip` you already have in the settings window
+  (cogwheel → UE4SSL.zip → browse; MintCat keeps one in its cache, e.g.
+  `~/.cache/com.mint.cat/UE4SSL.zip` on Linux). The settings row also has a **download** button,
+  and a path set there is always used as is.
 - **Native DLL mods are flagged and confirmed.** Mods containing a native DLL get an orange
   **native** label in the mod list (JS-only mods a grey **js** label). A native DLL runs inside the
   game process with the game's full permissions, so the first time a DLL is about to be installed
