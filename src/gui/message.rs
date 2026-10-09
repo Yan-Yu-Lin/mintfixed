@@ -284,9 +284,8 @@ impl DownloadUe4ssl {
                     if let Some(window) = &mut app.settings_window {
                         window.set_ue4ssl_zip_path(&self.path);
                     }
-                    app.last_action = Some(LastAction::success(format!(
-                        "downloaded UE4SSL {version}"
-                    )));
+                    app.last_action =
+                        Some(LastAction::success(format!("downloaded UE4SSL {version}")));
                 }
                 Err(e) => {
                     error!("{}", e);

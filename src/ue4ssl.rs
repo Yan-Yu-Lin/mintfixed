@@ -188,8 +188,7 @@ pub fn mod_folder_name(name: &str) -> String {
     let mut s: String = name
         .chars()
         .map(|c| {
-            if c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
-            {
+            if c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') {
                 '_'
             } else {
                 c
@@ -422,8 +421,16 @@ pub fn install(
     install_runtime(binaries, ue4ssl_zip, &mut manifest)?;
     write_manifest(binaries, &manifest)?;
 
-    let wanted = mods.iter().map(|m| m.folder.clone()).collect::<BTreeSet<_>>();
-    for stale in manifest.mods.difference(&wanted).cloned().collect::<Vec<_>>() {
+    let wanted = mods
+        .iter()
+        .map(|m| m.folder.clone())
+        .collect::<BTreeSet<_>>();
+    for stale in manifest
+        .mods
+        .difference(&wanted)
+        .cloned()
+        .collect::<Vec<_>>()
+    {
         info!("removing UE4SSL mod no longer in profile: {stale}");
         remove_dir_if_exists(&mods_dir.join(&stale))?;
         manifest.mods.remove(&stale);
@@ -799,7 +806,10 @@ mod tests {
         assert_eq!(fs::read(bin.join("dwmapi.dll")).unwrap(), b"PROXY");
         assert_eq!(fs::read(bin.join("ue4ss/UE4SSL.dll")).unwrap(), b"LOADER");
         assert_eq!(fs::read(mods.join("AntiLag.zip/main.dll")).unwrap(), b"AL");
-        assert_eq!(fs::read(mods.join("AntiLag.zip/js/main.js")).unwrap(), b"JS");
+        assert_eq!(
+            fs::read(mods.join("AntiLag.zip/js/main.js")).unwrap(),
+            b"JS"
+        );
         assert_eq!(fs::read(mods.join("CDCompat.zip/main.dll")).unwrap(), b"CD");
         assert!(!mods.join("AntiLag.zip/main.dll.tmp").exists());
         let manifest = read_manifest(&bin).unwrap().unwrap();
@@ -873,7 +883,12 @@ mod tests {
         let zip = write_runtime_zip(tmp.path());
         let bin = tmp.path().join("Win64");
         fs::create_dir_all(&bin).unwrap();
-        install(&bin, Some(&zip), &[ue4ssl_mod("M.zip", None, &[("main.js", b"JS")])]).unwrap();
+        install(
+            &bin,
+            Some(&zip),
+            &[ue4ssl_mod("M.zip", None, &[("main.js", b"JS")])],
+        )
+        .unwrap();
         fs::write(bin.join("ue4ss/UE4SS.log"), b"log").unwrap();
         // empty profile = remove everything mint installed
         install(&bin, None, &[]).unwrap();

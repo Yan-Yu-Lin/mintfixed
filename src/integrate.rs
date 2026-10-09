@@ -355,8 +355,8 @@ pub fn integrate<P: AsRef<Path>>(
         let raw_mod_file = fs::File::open(path).with_context(|_| CtxtIoSnafu {
             mod_info: mod_info.clone(),
         })?;
-        let content = crate::ue4ssl::classify_mod(Box::new(BufReader::new(raw_mod_file)))
-            .map_err(|e| match e {
+        let content = crate::ue4ssl::classify_mod(Box::new(BufReader::new(raw_mod_file))).map_err(
+            |e| match e {
                 IntegrationError::IoError { source } => IntegrationError::CtxtIoError {
                     source,
                     mod_info: mod_info.clone().into(),
@@ -365,7 +365,8 @@ pub fn integrate<P: AsRef<Path>>(
                     source: e.into(),
                     mod_info: mod_info.clone().into(),
                 },
-            })?;
+            },
+        )?;
         if content.needs_ue4ssl() {
             ue4ssl_mods.push(crate::ue4ssl::Ue4sslMod {
                 folder: crate::ue4ssl::mod_folder_name(&mod_info.name),
