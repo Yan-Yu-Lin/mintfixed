@@ -17,7 +17,7 @@ use unreal_asset::AssetBuilder;
 use unreal_asset::engine_version::EngineVersion;
 
 use crate::mod_lints::LintError;
-use crate::providers::{ModInfo, ProviderError, ReadSeek};
+use crate::providers::{ModInfo, ProviderError};
 use mint_lib::DRGInstallation;
 use mint_lib::mod_info::{ApprovalStatus, Meta, MetaConfig, MetaMod};
 
