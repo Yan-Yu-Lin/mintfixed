@@ -931,6 +931,9 @@ mod network_tests {
         let version = super::download_ue4ssl(&dest).await.unwrap();
         assert!(!version.is_empty());
         super::validate_ue4ssl_zip(&dest).unwrap();
-        println!("downloaded UE4SSL {version}, {} bytes", dest.metadata().unwrap().len());
+        println!(
+            "downloaded UE4SSL {version}, {} bytes",
+            dest.metadata().unwrap().len()
+        );
     }
 }
