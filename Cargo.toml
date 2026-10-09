@@ -43,6 +43,7 @@ hook = ["dep:hook"]
 debug = ["egui/deadlock_detection"]
 
 [dependencies]
+ab_glyph = "0.2.23"
 ansi_term = "0.12.1"
 anyhow.workspace = true
 async-trait = "0.1.89"

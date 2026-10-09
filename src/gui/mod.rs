@@ -1,3 +1,4 @@
+mod cjk_font;
 mod find_string;
 mod message;
 mod named_combobox;
@@ -252,10 +253,11 @@ enum LastActionStatus {
 
 impl App {
     fn new(
-        _cc: &eframe::CreationContext,
+        cc: &eframe::CreationContext,
         dirs: Dirs,
         args: Option<Vec<String>>,
     ) -> Result<Self, MintError> {
+        cjk_font::install(&cc.egui_ctx);
         let (tx, rx) = mpsc::channel(10);
         let state = State::init(dirs)?;
 

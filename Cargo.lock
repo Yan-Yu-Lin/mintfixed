@@ -3310,6 +3310,7 @@ dependencies = [
 name = "mint"
 version = "0.2.10"
 dependencies = [
+ "ab_glyph",
  "ansi_term",
  "anyhow",
  "async-trait",
