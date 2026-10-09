@@ -2083,7 +2083,8 @@ impl eframe::App for App {
                                 msg
                             }
                         };
-                        ui.ctx().request_repaint(); // for continuously updating time
+                        // the "Ns ago" text changes at most once a second
+                        ui.ctx().request_repaint_after(Duration::from_secs(1));
                         ui.label(format!("({}): {}", last_action.timeago(), msg));
                     }
                 });
