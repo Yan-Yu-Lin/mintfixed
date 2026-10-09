@@ -17,7 +17,7 @@ use unreal_asset::AssetBuilder;
 use unreal_asset::engine_version::EngineVersion;
 
 use crate::mod_lints::LintError;
-use crate::providers::{ModInfo, ProviderError, ReadSeek};
+use crate::providers::{ModInfo, ProviderError};
 use mint_lib::DRGInstallation;
 use mint_lib::mod_info::{ApprovalStatus, Meta, MetaConfig, MetaMod};
 
@@ -63,6 +63,8 @@ pub fn uninstall<P: AsRef<Path>>(path_pak: P, modio_mods: HashSet<u32>) -> Resul
         }
         .with_whatever_context(|_| format!("failed to remove {}", path_hook_dll.display()))?;
     }
+    crate::ue4ssl::uninstall(&installation.binaries_directory())
+        .whatever_context("failed to remove UE4SSL files")?;
     uninstall_modio(&installation, modio_mods).ok();
     Ok(())
 }
@@ -221,6 +223,7 @@ pub fn integrate<P: AsRef<Path>>(
     path_pak: P,
     config: MetaConfig,
     mods: Vec<(ModInfo, PathBuf)>,
+    ue4ssl_zip: Option<&Path>,
 ) -> Result<(), IntegrationError> {
     let Ok(installation) = DRGInstallation::from_pak_path(&path_pak) else {
         return Err(IntegrationError::DrgInstallationNotFound {
@@ -228,6 +231,26 @@ pub fn integrate<P: AsRef<Path>>(
         });
     };
     let path_mod_pak = installation.paks_path().join("mods_P.pak");
+
+    // fail before touching the game files if UE4SSL mods can't be installed
+    if ue4ssl_zip.is_none() {
+        for (mod_info, path) in &mods {
+            let has_ue4ssl = crate::ue4ssl::has_ue4ssl_content(path).map_err(|e| {
+                IntegrationError::CtxtGenericError {
+                    source: e.into(),
+                    mod_info: mod_info.clone().into(),
+                }
+            })?;
+            if has_ue4ssl {
+                return Err(IntegrationError::GenericError {
+                    msg: format!(
+                        "this profile has UE4SSL mods but no UE4SSL.zip is configured (mod {:?}); set it in the settings",
+                        mod_info.name
+                    ),
+                });
+            }
+        }
+    }
 
     let mut fsd_pak_reader = BufReader::new(fs::File::open(path_pak.as_ref())?);
     let fsd_pak = repak::PakBuilder::new().reader(&mut fsd_pak_reader)?;
@@ -326,21 +349,34 @@ pub fn integrate<P: AsRef<Path>>(
     let mut init_cave_assets = HashSet::new();
 
     let mut added_paths = HashSet::new();
+    let mut ue4ssl_mods = vec![];
 
     for (mod_info, path) in &mods {
         let raw_mod_file = fs::File::open(path).with_context(|_| CtxtIoSnafu {
             mod_info: mod_info.clone(),
         })?;
-        let mut buf = get_pak_from_data(Box::new(BufReader::new(raw_mod_file))).map_err(|e| {
-            if let IntegrationError::IoError { source } = e {
-                IntegrationError::CtxtIoError {
+        let content = crate::ue4ssl::classify_mod(Box::new(BufReader::new(raw_mod_file))).map_err(
+            |e| match e {
+                IntegrationError::IoError { source } => IntegrationError::CtxtIoError {
                     source,
                     mod_info: mod_info.clone().into(),
-                }
-            } else {
-                e
-            }
-        })?;
+                },
+                e => IntegrationError::CtxtGenericError {
+                    source: e.into(),
+                    mod_info: mod_info.clone().into(),
+                },
+            },
+        )?;
+        if content.needs_ue4ssl() {
+            ue4ssl_mods.push(crate::ue4ssl::Ue4sslMod {
+                folder: crate::ue4ssl::mod_folder_name(&mod_info.name),
+                dll: content.dll,
+                js: content.js,
+            });
+        }
+        let Some(mut buf) = content.pak else {
+            continue;
+        };
         let pak = repak::PakBuilder::new()
             .reader(&mut buf)
             .with_context(|_| CtxtRepakSnafu {
@@ -495,6 +531,8 @@ pub fn integrate<P: AsRef<Path>>(
 
     bundle.finish()?;
 
+    crate::ue4ssl::install(&installation.binaries_directory(), ue4ssl_zip, &ue4ssl_mods)?;
+
     info!(
         "{} mods installed to {}",
         mods.len(),
@@ -639,40 +677,6 @@ impl<W: Write + Seek> ModBundleWriter<W> {
 struct Dir {
     name: String,
     children: HashMap<String, Dir>,
-}
-
-pub(crate) fn get_pak_from_data(
-    mut data: Box<dyn ReadSeek>,
-) -> Result<Box<dyn ReadSeek>, IntegrationError> {
-    if let Ok(mut archive) = zip::ZipArchive::new(&mut data) {
-        (0..archive.len())
-            .map(|i| -> Result<Option<Box<dyn ReadSeek>>, IntegrationError> {
-                let mut file = archive
-                    .by_index(i)
-                    .map_err(|_| IntegrationError::GenericError {
-                        msg: "failed to extract file in zip archive".to_string(),
-                    })?;
-                match file.enclosed_name() {
-                    Some(p) => {
-                        if file.is_file() && p.extension() == Some(std::ffi::OsStr::new("pak")) {
-                            let mut buf = vec![];
-                            file.read_to_end(&mut buf)?;
-                            Ok(Some(Box::new(Cursor::new(buf))))
-                        } else {
-                            Ok(None)
-                        }
-                    }
-                    None => Ok(None),
-                }
-            })
-            .find_map(Result::transpose)
-            .context(GenericSnafu {
-                msg: "zip archive does not contain pak",
-            })?
-    } else {
-        data.rewind()?;
-        Ok(data)
-    }
 }
 
 type ImportChain<'a> = Vec<Import<'a>>;

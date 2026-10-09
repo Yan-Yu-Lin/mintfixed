@@ -339,6 +339,9 @@ pub struct Config {
     pub drg_pak_path: Option<PathBuf>,
     pub gui_theme: Option<GuiTheme>,
     pub sorting_config: Option<SortingConfig>,
+    /// UE4SS.Lite runtime package (UE4SSL.zip), needed to install UE4SSL DLL/JS mods.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ue4ssl_zip_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -413,6 +416,7 @@ impl Default for Config!["0.0.0"] {
                 .map(DRGInstallation::main_pak),
             gui_theme: None,
             sorting_config: None,
+            ue4ssl_zip_path: None,
         }
     }
 }

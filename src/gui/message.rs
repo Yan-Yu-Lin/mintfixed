@@ -182,12 +182,14 @@ pub struct Integrate {
 }
 
 impl Integrate {
+    #[allow(clippy::too_many_arguments)]
     pub fn send(
         rc: &mut RequestCounter,
         store: Arc<ModStore>,
         mods: Vec<ModSpecification>,
         fsd_pak: PathBuf,
         config: MetaConfig,
+        ue4ssl_zip: Option<PathBuf>,
         tx: Sender<Message>,
         ctx: egui::Context,
     ) -> MessageHandle<HashMap<ModSpecification, SpecFetchProgress>> {
@@ -195,9 +197,17 @@ impl Integrate {
         MessageHandle {
             rid,
             handle: tokio::task::spawn(async move {
-                let res =
-                    integrate_async(store, ctx.clone(), mods, fsd_pak, config, rid, tx.clone())
-                        .await;
+                let res = integrate_async(
+                    store,
+                    ctx.clone(),
+                    mods,
+                    fsd_pak,
+                    config,
+                    ue4ssl_zip,
+                    rid,
+                    tx.clone(),
+                )
+                .await;
                 tx.send(Message::Integrate(Integrate { rid, result: res }))
                     .await
                     .unwrap();
@@ -351,12 +361,14 @@ impl CheckUpdates {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn integrate_async(
     store: Arc<ModStore>,
     ctx: egui::Context,
     mod_specs: Vec<ModSpecification>,
     fsd_pak: PathBuf,
     config: MetaConfig,
+    ue4ssl_zip: Option<PathBuf>,
     rid: RequestID,
     message_tx: Sender<Message>,
 ) -> Result<(), IntegrationError> {
@@ -397,11 +409,12 @@ async fn integrate_async(
 
     let paths = store.fetch_mods_ordered(&urls, update, Some(tx)).await?;
 
-    tokio::task::spawn_blocking(|| {
+    tokio::task::spawn_blocking(move || {
         crate::integrate::integrate(
             fsd_pak,
             config,
             to_integrate.into_iter().zip(paths).collect(),
+            ue4ssl_zip.as_deref(),
         )
     })
     .await??;
