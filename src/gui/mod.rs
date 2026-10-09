@@ -160,6 +160,47 @@ impl Ue4sslKinds {
     }
 }
 
+/// What a mod list row shows from the mod store, looked up once instead of on every frame.
+struct RowInfo {
+    info: Option<ModInfo>,
+    /// version name of the row's spec, the unpinned spec and each version (combo box)
+    version_name: String,
+    latest_version_name: String,
+    version_names: Vec<String>,
+    cached_path: Option<PathBuf>,
+}
+
+/// Per-spec cache of [`RowInfo`]. The mod store only changes when a background job (resolve,
+/// install, cache update, provider setup) reports back, so it is cleared on every such message.
+#[derive(Default)]
+struct RowInfoCache(HashMap<String, std::rc::Rc<RowInfo>>);
+
+impl RowInfoCache {
+    fn get(&mut self, store: &ModStore, spec: &ModSpecification) -> std::rc::Rc<RowInfo> {
+        if let Some(row) = self.0.get(&spec.url) {
+            return row.clone();
+        }
+        let info = store.get_mod_info(spec);
+        let name = |spec: &ModSpecification| store.get_version_name(spec).unwrap_or_default();
+        let row = std::rc::Rc::new(RowInfo {
+            version_name: info.as_ref().map(|_| name(spec)).unwrap_or_default(),
+            latest_version_name: info.as_ref().map(|i| name(&i.spec)).unwrap_or_default(),
+            version_names: info
+                .as_ref()
+                .map(|i| i.versions.iter().map(name).collect())
+                .unwrap_or_default(),
+            cached_path: info.as_ref().and_then(|_| store.cached_mod_path(spec)),
+            info,
+        });
+        self.0.insert(spec.url.clone(), row.clone());
+        row
+    }
+
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
 /// Marks mods that run code through UE4SS.Lite. Pak-only mods get nothing.
 fn ui_ue4ssl_badge(ui: &mut Ui, kind: crate::ue4ssl::Ue4sslKind) {
     let badge = |text: &str, fill: Color32| {
@@ -217,6 +258,8 @@ pub struct App {
     native_confirmation: Option<Vec<crate::ue4ssl::UnconfirmedNativeMod>>,
     /// Which UE4SSL parts each mod file has, for the mod list labels.
     ue4ssl_kinds: Ue4sslKinds,
+    /// Mod store lookups for the mod list rows.
+    row_info: RowInfoCache,
 }
 
 #[derive(Default)]
@@ -326,6 +369,7 @@ impl App {
             download_ue4ssl_rid: None,
             native_confirmation: None,
             ue4ssl_kinds: Default::default(),
+            row_info: Default::default(),
         })
     }
 
@@ -526,9 +570,10 @@ impl App {
                 }
                 */
 
-                let info = self.state.store.get_mod_info(&mc.spec);
+                let row = self.row_info.get(&self.state.store, &mc.spec);
+                let info = &row.info;
 
-                if let Some(ref info) = info
+                if let Some(info) = info
                     && let Some(modio_id) = info.modio_id
                     && self.problematic_mod_id.is_some_and(|id| id == modio_id)
                 {
@@ -557,31 +602,22 @@ impl App {
                     }
                 }
 
-                if let Some(info) = &info {
+                if let Some(info) = info {
                     egui::ComboBox::from_id_salt(row_index)
-                        .selected_text(
-                            self.state
-                                .store
-                                .get_version_name(&mc.spec)
-                                .unwrap_or_default(),
-                        )
+                        .selected_text(row.version_name.as_str())
                         .show_ui(ui, |ui| {
                             ui.selectable_value(
                                 &mut mc.spec.url,
                                 info.spec.url.to_string(),
-                                self.state
-                                    .store
-                                    .get_version_name(&info.spec)
-                                    .unwrap_or_default(),
+                                row.latest_version_name.as_str(),
                             );
-                            for version in info.versions.iter().rev() {
+                            for (version, name) in
+                                info.versions.iter().zip(&row.version_names).rev()
+                            {
                                 ui.selectable_value(
                                     &mut mc.spec.url,
                                     version.url.to_string(),
-                                    self.state
-                                        .store
-                                        .get_version_name(version)
-                                        .unwrap_or_default(),
+                                    name.as_str(),
                                 );
                             }
                         });
@@ -721,8 +757,8 @@ impl App {
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui_mod_tags(ctx, ui, info);
-                        if let Some(path) = self.state.store.cached_mod_path(&mc.spec) {
-                            ui_ue4ssl_badge(ui, self.ue4ssl_kinds.get(ui.ctx(), &path));
+                        if let Some(path) = &row.cached_path {
+                            ui_ue4ssl_badge(ui, self.ue4ssl_kinds.get(ui.ctx(), path));
                         }
                     });
                 } else {
@@ -987,6 +1023,7 @@ impl App {
         };
 
         while let Ok((rid, res)) = window.rx.try_recv() {
+            self.row_info.clear();
             if window.check_rid.as_ref().is_some_and(|r| rid == r.0) {
                 match res {
                     Ok(()) => {
@@ -1934,6 +1971,8 @@ impl eframe::App for App {
 
         // message handling
         while let Ok(msg) = self.rx.try_recv() {
+            // every message comes from a background job that may have changed the mod store
+            self.row_info.clear();
             msg.handle(self);
         }
 
