@@ -20,9 +20,12 @@ WIN64="$GAME/FSD/Binaries/Win64"
 PAKS="$GAME/FSD/Content/Paks"
 MOVED_TO=${MOVED_TO:-"/mnt/data/drgmod/backups/mintcat-removed-$(date +%Y%m%d-%H%M%S)"}
 
-if pgrep -f FSD-Win64-Shipping >/dev/null; then echo "DRG is running, close it first" >&2; exit 1; fi
-if pgrep -x mintcat >/dev/null || pgrep -f '/mintcat( |$)' >/dev/null; then
-  echo "MintCat is running, close it first" >&2; exit 1
+# SKIP_PROCESS_CHECK=1 is only for rehearsing on a copy of the game (DRG_DIR pointing elsewhere)
+if [[ -z "${SKIP_PROCESS_CHECK:-}" ]]; then
+  if pgrep -f FSD-Win64-Shipping >/dev/null; then echo "DRG is running, close it first" >&2; exit 1; fi
+  if pgrep -x mintcat >/dev/null || pgrep -f '/mintcat( |$)' >/dev/null; then
+    echo "MintCat is running, close it first" >&2; exit 1
+  fi
 fi
 [[ -f "$SHA_LIST" ]] || { echo "missing backup list $SHA_LIST" >&2; exit 1; }
 
