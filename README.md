@@ -6,6 +6,59 @@ This version of Mint fixes these issues:
 
 If you'd like to build it yourself from the original mint-repo, take a look at my commits to see the fixes I implemented.
 
+## UE4SS.Lite (native DLL / JS) mods — optional
+
+mint can also install mods for [UE4SS.Lite](https://github.com/iris-cat-dev/UE4SS.Lite)
+("UE4SSL"), using the same folder layout as [MintCat](https://github.com/iris-cat-dev/mintcat).
+
+- **Opt-in.** Nothing changes for profiles that only contain `.pak` mods: no extra files are
+  written and the merged `mods_P.pak` is built exactly as before. UE4SSL support only does
+  anything when a mod `.zip` contains a native DLL or a JS mod.
+- **mint bundles no runtime.** The UE4SS.Lite loader (`UE4SSL.zip`) is not part of mint (it has no
+  license). In the settings window (cogwheel) set the path to a `UE4SSL.zip` you already have (MintCat
+  keeps one in its cache, e.g. `~/.cache/com.mint.cat/UE4SSL.zip` on Linux), or press **download**
+  to fetch it from MintCat's release server
+  (`https://yuri-oss-sg.oss-ap-southeast-1.aliyuncs.com/update.json`); the download is checked
+  against the published size and md5. A profile with DLL/JS mods and no `UE4SSL.zip` is refused
+  before anything is written.
+- **Native DLL mods are flagged and confirmed.** Mods containing a native DLL get an orange
+  **native** label in the mod list (JS-only mods a grey **js** label). A native DLL runs inside the
+  game process with the game's full permissions, so the first time a DLL is about to be installed
+  mint asks for confirmation, listing the mods. The answer is remembered per DLL (by its SHA-256 in
+  `config.json`), so updating a mod to a different DLL asks again. The command line asks the same
+  question in the terminal.
+- **Uninstall is manifest-driven.** Every file and folder mint creates for UE4SSL is recorded in
+  `FSD/Binaries/Win64/ue4ss/mods/.mint-managed.json`. "Uninstall mods" (and installing a profile
+  without DLL/JS mods) removes exactly those and nothing else: folders in `ue4ss/mods/` that mint
+  did not create, and loader files that were already there before mint, are left alone. Mods
+  removed from the profile are deleted on the next install; a mod's own files (e.g. its `.log`)
+  survive reinstalling it.
+
+What mint looks for in a mod `.zip` (any combination is allowed):
+
+| Part | Rule | Installed to (`FSD/Binaries/Win64/`) |
+|---|---|---|
+| pak | first `.pak` (unchanged) | merged into `mods_P.pak` |
+| native DLL | `dll/main.dll`, otherwise the first `.dll` (never `dwmapi.dll` / `UE4SSL.dll`) | `ue4ss/mods/<mod>/main.dll` |
+| JS mod | the `js/` folder containing `js/main.js` | `ue4ss/mods/<mod>/js/` |
+
+`<mod>` is the mod's name in mint — for a local file, the file name including `.zip` (e.g.
+`ue4ss/mods/AntiLag-0.1.0.zip/`), which matches MintCat so per-mod data carries over. The loader
+files (`dwmapi.dll`, `ue4ss/UE4SSL.dll`, `ue4ss/mods/UE4SSL.JavaScript*`) are extracted from
+`UE4SSL.zip`.
+
+**Linux / Steam Deck (Proton):** the loader is a `dwmapi.dll` proxy, which Wine ignores unless told
+otherwise. Set the game's Steam launch options to:
+
+```
+WINEDLLOVERRIDES="dwmapi=n,b" %command%
+```
+
+**Don't mix with MintCat's integration.** If MintCat has mods installed, uninstall them there first
+(so `FSD-WindowsNoEditor_Mods.pak` is gone), otherwise the game loads two merged mod paks.
+
+Thanks to MintCat for the install layout and to UE4SS.Lite for the loader.
+
 # mint
 
 3rd party mod integration tool for Deep Rock Galactic to download and integrate mods completely
