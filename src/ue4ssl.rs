@@ -918,3 +918,19 @@ mod tests {
         assert_eq!(version, "0.31.0");
     }
 }
+
+#[cfg(test)]
+mod network_tests {
+    /// Real download from MintCat's server. Ignored by default (network); run with
+    /// `cargo test -- --ignored download_from_mintcat`.
+    #[tokio::test]
+    #[ignore]
+    async fn download_from_mintcat() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("ue4ssl").join("UE4SSL.zip");
+        let version = super::download_ue4ssl(&dest).await.unwrap();
+        assert!(!version.is_empty());
+        super::validate_ue4ssl_zip(&dest).unwrap();
+        println!("downloaded UE4SSL {version}, {} bytes", dest.metadata().unwrap().len());
+    }
+}
