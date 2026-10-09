@@ -261,6 +261,19 @@ impl LastAction {
             ">1h ago".into()
         }
     }
+    /// When [`Self::timeago`] next changes, or `None` once it no longer does (after an hour).
+    fn next_timeago_change(&self) -> Option<Duration> {
+        let elapsed = Instant::now().duration_since(self.timestamp);
+        let step = if elapsed.as_secs() < 60 {
+            Duration::from_secs(1)
+        } else if elapsed.as_secs() < 3600 {
+            Duration::from_secs(60)
+        } else {
+            return None;
+        };
+        let next = Duration::from_secs(elapsed.as_secs() / step.as_secs() * step.as_secs()) + step;
+        Some(next - elapsed)
+    }
 }
 
 enum LastActionStatus {
@@ -2083,8 +2096,10 @@ impl eframe::App for App {
                                 msg
                             }
                         };
-                        // the "Ns ago" text changes at most once a second
-                        ui.ctx().request_repaint_after(Duration::from_secs(1));
+                        // repaint exactly when the "N ago" text changes; not at all after an hour
+                        if let Some(next) = last_action.next_timeago_change() {
+                            ui.ctx().request_repaint_after(next);
+                        }
                         ui.label(format!("({}): {}", last_action.timeago(), msg));
                     }
                 });
