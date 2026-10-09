@@ -129,4 +129,14 @@ impl ModProvider for FileProvider {
     fn get_version_name(&self, _spec: &ModSpecification, _cache: ProviderCache) -> Option<String> {
         Some("latest".to_string())
     }
+
+    fn cached_path(
+        &self,
+        res: &ModResolution,
+        _cache: ProviderCache,
+        _blob_cache: &BlobCache,
+    ) -> Option<PathBuf> {
+        let path = PathBuf::from(&res.url.0);
+        path.exists().then_some(path)
+    }
 }

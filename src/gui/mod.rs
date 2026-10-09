@@ -126,6 +126,41 @@ impl SortBy {
     }
 }
 
+/// UE4SSL content of a mod file, rescanned only when the file changes.
+fn ue4ssl_kind_cached(
+    cache: &mut HashMap<PathBuf, (Option<SystemTime>, crate::ue4ssl::Ue4sslKind)>,
+    path: PathBuf,
+) -> crate::ue4ssl::Ue4sslKind {
+    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+    if let Some((cached_mtime, kind)) = cache.get(&path)
+        && *cached_mtime == mtime
+    {
+        return *kind;
+    }
+    let kind = crate::ue4ssl::scan_mod_kind(&path).unwrap_or_default();
+    cache.insert(path, (mtime, kind));
+    kind
+}
+
+/// Marks mods that run code through UE4SS.Lite. Pak-only mods get nothing.
+fn ui_ue4ssl_badge(ui: &mut Ui, kind: crate::ue4ssl::Ue4sslKind) {
+    let badge = |text: &str, fill: Color32| {
+        egui::Button::new(RichText::new(text).color(Color32::BLACK))
+            .small()
+            .fill(fill)
+            .stroke(egui::Stroke::NONE)
+    };
+    if kind.native {
+        ui.add_enabled(false, badge("native", Color32::from_rgb(255, 170, 120)))
+            .on_disabled_hover_text(
+                "This mod contains a native DLL that runs inside the game process via UE4SS.Lite",
+            );
+    } else if kind.js {
+        ui.add_enabled(false, badge("js", Color32::from_rgb(220, 220, 220)))
+            .on_disabled_hover_text("This mod contains a JavaScript mod run by UE4SS.Lite");
+    }
+}
+
 const MODIO_LOGO_PNG: &[u8] = include_bytes!("../../assets/modio-cog-blue.png");
 
 pub struct App {
@@ -161,6 +196,8 @@ pub struct App {
     original_exe_path: Option<PathBuf>,
     problematic_mod_id: Option<u32>,
     download_ue4ssl_rid: Option<MessageHandle<()>>,
+    /// Which UE4SSL parts each mod file has, keyed by the cached file path (with its mtime).
+    ue4ssl_kinds: HashMap<PathBuf, (Option<SystemTime>, crate::ue4ssl::Ue4sslKind)>,
 }
 
 #[derive(Default)]
@@ -254,6 +291,7 @@ impl App {
             original_exe_path: None,
             problematic_mod_id: None,
             download_ue4ssl_rid: None,
+            ue4ssl_kinds: Default::default(),
         })
     }
 
@@ -649,6 +687,10 @@ impl App {
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui_mod_tags(ctx, ui, info);
+                        if let Some(path) = self.state.store.cached_mod_path(&mc.spec) {
+                            let kind = ue4ssl_kind_cached(&mut self.ue4ssl_kinds, path);
+                            ui_ue4ssl_badge(ui, kind);
+                        }
                     });
                 } else {
                     if ui

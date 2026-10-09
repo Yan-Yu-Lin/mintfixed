@@ -67,6 +67,15 @@ pub trait ModProvider: Send + Sync {
     fn get_mod_info(&self, spec: &ModSpecification, cache: ProviderCache) -> Option<ModInfo>;
     fn is_pinned(&self, spec: &ModSpecification, cache: ProviderCache) -> bool;
     fn get_version_name(&self, spec: &ModSpecification, cache: ProviderCache) -> Option<String>;
+    /// Local path of an already fetched mod file, without fetching anything.
+    fn cached_path(
+        &self,
+        _res: &ModResolution,
+        _cache: ProviderCache,
+        _blob_cache: &BlobCache,
+    ) -> Option<PathBuf> {
+        None
+    }
 }
 
 #[derive(Debug, Snafu)]

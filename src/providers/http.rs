@@ -246,4 +246,18 @@ impl ModProvider for HttpProvider {
     fn get_version_name(&self, _spec: &ModSpecification, _cache: ProviderCache) -> Option<String> {
         Some("latest".to_string())
     }
+
+    fn cached_path(
+        &self,
+        res: &ModResolution,
+        cache: ProviderCache,
+        blob_cache: &BlobCache,
+    ) -> Option<PathBuf> {
+        cache
+            .read()
+            .unwrap()
+            .get::<HttpProviderCache>(HTTP_PROVIDER_ID)
+            .and_then(|c| c.url_blobs.get(&res.url.0))
+            .and_then(|r| blob_cache.get_path(r))
+    }
 }

@@ -235,13 +235,13 @@ pub fn integrate<P: AsRef<Path>>(
     // fail before touching the game files if UE4SSL mods can't be installed
     if ue4ssl_zip.is_none() {
         for (mod_info, path) in &mods {
-            let has_ue4ssl = crate::ue4ssl::has_ue4ssl_content(path).map_err(|e| {
+            let kind = crate::ue4ssl::scan_mod_kind(path).map_err(|e| {
                 IntegrationError::CtxtGenericError {
                     source: e.into(),
                     mod_info: mod_info.clone().into(),
                 }
             })?;
-            if has_ue4ssl {
+            if kind.any() {
                 return Err(IntegrationError::GenericError {
                     msg: format!(
                         "this profile has UE4SSL mods but no UE4SSL.zip is configured (mod {:?}); set it in the settings",

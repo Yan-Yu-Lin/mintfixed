@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use snafu::prelude::*;
 use tracing::*;
@@ -225,6 +225,16 @@ impl ModStore {
         self.get_provider(&spec.url)
             .unwrap()
             .is_pinned(spec, self.cache.clone())
+    }
+
+    /// Local path of the mod file for `spec` if it is already available (no network access).
+    pub fn cached_mod_path(&self, spec: &ModSpecification) -> Option<PathBuf> {
+        let info = self.get_mod_info(spec)?;
+        self.get_provider(&info.resolution.url.0).ok()?.cached_path(
+            &info.resolution,
+            self.cache.clone(),
+            &self.blob_cache,
+        )
     }
 
     pub fn get_version_name(&self, spec: &ModSpecification) -> Option<String> {

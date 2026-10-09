@@ -1008,6 +1008,21 @@ impl<M: DrgModio + Send + Sync> ModProvider for ModioProvider<M> {
             Some("latest".to_string())
         }
     }
+
+    fn cached_path(
+        &self,
+        res: &ModResolution,
+        cache: ProviderCache,
+        blob_cache: &BlobCache,
+    ) -> Option<PathBuf> {
+        let modfile_id = parse_url(&res.url.0).ok()?.modfile_id?;
+        cache
+            .read()
+            .unwrap()
+            .get::<ModioCache>(MODIO_PROVIDER_ID)
+            .and_then(|c| c.modfile_blobs.get(&modfile_id))
+            .and_then(|r| blob_cache.get_path(r))
+    }
 }
 
 fn process_modio_tags(set: &HashSet<String>) -> ModioTags {

@@ -183,14 +183,31 @@ pub fn classify_mod(mut data: Box<dyn ReadSeek>) -> Result<ModContent, Integrati
     Ok(ModContent { pak, dll, js })
 }
 
-/// Cheap check (no decompression) whether a mod file has a DLL or JS part, so a missing
-/// UE4SSL.zip can be reported before anything is written to the game.
-pub fn has_ue4ssl_content(path: &Path) -> Result<bool, IntegrationError> {
+/// Which UE4SSL parts a mod file has.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Ue4sslKind {
+    /// Has a native DLL (runs inside the game process).
+    pub native: bool,
+    /// Has a JS mod.
+    pub js: bool,
+}
+
+impl Ue4sslKind {
+    pub fn any(self) -> bool {
+        self.native || self.js
+    }
+}
+
+/// Cheap check (no decompression) which UE4SSL parts a mod file has. Non-zip files have none.
+pub fn scan_mod_kind(path: &Path) -> Result<Ue4sslKind, IntegrationError> {
     let Ok(mut archive) = zip::ZipArchive::new(BufReader::new(fs::File::open(path)?)) else {
-        return Ok(false);
+        return Ok(Ue4sslKind::default());
     };
     let located = locate(&mut archive)?;
-    Ok(located.dll.is_some() || located.js_dir.is_some())
+    Ok(Ue4sslKind {
+        native: located.dll.is_some(),
+        js: located.js_dir.is_some(),
+    })
 }
 
 /// Folder name for a mod under `ue4ss/mods/`.
@@ -719,6 +736,41 @@ mod tests {
     fn classify_nothing_is_error() {
         let err = classify(&[("README.md", b"hi")]).err().unwrap();
         assert!(err.to_string().contains("does not contain"), "{err}");
+    }
+
+    #[test]
+    fn scan_kind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let write = |name: &str, files: &[(&str, &[u8])]| {
+            let path = tmp.path().join(name);
+            fs::write(&path, make_zip(files)).unwrap();
+            path
+        };
+        let pak = write("pak.zip", &[("Mod.pak", b"PAK")]);
+        let js = write("js.zip", &[("js/main.js", b"JS")]);
+        let native = write(
+            "native.zip",
+            &[("dll/main.dll", b"DLL"), ("js/main.js", b"JS")],
+        );
+        let raw = tmp.path().join("raw.pak");
+        fs::write(&raw, b"PAK").unwrap();
+
+        assert_eq!(scan_mod_kind(&pak).unwrap(), Ue4sslKind::default());
+        assert_eq!(scan_mod_kind(&raw).unwrap(), Ue4sslKind::default());
+        assert_eq!(
+            scan_mod_kind(&js).unwrap(),
+            Ue4sslKind {
+                native: false,
+                js: true
+            }
+        );
+        assert_eq!(
+            scan_mod_kind(&native).unwrap(),
+            Ue4sslKind {
+                native: true,
+                js: true
+            }
+        );
     }
 
     #[test]
