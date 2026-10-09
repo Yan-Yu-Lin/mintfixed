@@ -1,3 +1,54 @@
+# mint + UE4SS.Lite mods
+
+This is a fork of [mintfixed](https://github.com/Wasserkleber/mintfixed) (itself a patch set on
+[trumank/mint](https://github.com/trumank/mint)) that can also install
+[UE4SS.Lite](https://github.com/iris-cat-dev/UE4SS.Lite) ("UE4SSL") native DLL and JavaScript mods, the same
+way [MintCat](https://github.com/iris-cat-dev/mintcat) does.
+
+What it adds:
+
+- A mod `.zip` no longer has to contain a `.pak`. mint looks for three kinds of content:
+  - a `.pak` (the first one, as before) — merged into `mods_P.pak` as usual,
+  - a native UE4SSL mod — `dll/main.dll` (or else the first `.dll` in the zip, ignoring
+    `dwmapi.dll`/`UE4SSL.dll`) — installed to `FSD/Binaries/Win64/ue4ss/mods/<mod>/main.dll`,
+  - a UE4SSL JS mod — the `js/` folder that contains `js/main.js` — copied to
+    `ue4ss/mods/<mod>/js/`.
+
+  A zip may contain any combination. `<mod>` is the mod's name in mint, which for a local file is
+  the file name including `.zip` (e.g. `ue4ss/mods/AntiLag-0.1.0-alpha.5.zip/`), exactly like
+  MintCat, so mod settings/log files already in those folders keep working.
+- The UE4SSL loader is **not** bundled (UE4SS.Lite has no license). Set the path to a
+  `UE4SSL.zip` in the settings window (cogwheel), either a copy you already have (MintCat keeps one
+  in its cache folder, e.g. `~/.cache/com.mint.cat/UE4SSL.zip` on Linux) or press **download**,
+  which fetches it from MintCat's release server
+  (`https://yuri-oss-sg.oss-ap-southeast-1.aliyuncs.com/update.json`) into mint's data directory
+  and checks its size and md5. Profiles without DLL/JS mods don't need it.
+- On install mint extracts `UE4SSL.zip` into `FSD/Binaries/Win64/` (`dwmapi.dll`,
+  `ue4ss/UE4SSL.dll`, `ue4ss/mods/UE4SSL.JavaScript*`) and records everything it created in
+  `ue4ss/mods/.mint-managed.json`. "Uninstall mods" (or installing a profile with no DLL/JS mods)
+  removes only those files and folders; other folders in `ue4ss/mods/` are left alone. Mods that
+  were removed from the profile are deleted on the next install, but a mod's own files (like its
+  `.log`) survive reinstalling the same mod.
+- The command line works too: `mint integrate --mods Mod.zip ...` uses the `ue4ssl_zip_path` from
+  the config.
+
+**Linux / Steam Deck (Proton):** the loader is a `dwmapi.dll` proxy, which Wine ignores unless told
+otherwise. Set the game's Steam launch options to:
+
+```
+WINEDLLOVERRIDES="dwmapi=n,b" %command%
+```
+
+**Don't mix with MintCat.** If MintCat (or the official mod.io integration) has mods installed, turn
+that off first (in MintCat: uninstall/disable its integration so `FSD-WindowsNoEditor_Mods.pak` is
+gone), otherwise the game loads two merged mod paks.
+
+Credits: [trumank/mint](https://github.com/trumank/mint) (MIT/Apache-2.0), Wasserkleber's
+[mintfixed](https://github.com/Wasserkleber/mintfixed) fixes, MintCat for the install layout this
+copies, and [UE4SS.Lite](https://github.com/iris-cat-dev/UE4SS.Lite) for the loader itself.
+
+---
+
 This version of Mint fixes these issues:
 - Fixed HTTP 403 errors (mod lookup) by removing the deprecated `visible` filter from mod.io API requests.
 - Fixed HTTP 403 errors by replacing direct mod file metadata requests (`GET /mods/{id}/files/{file_id}`) with filtered list queries, restoring mod downloads.
