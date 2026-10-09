@@ -45,6 +45,7 @@ pub enum Message {
     LintMods(Box<LintMods>),
     SelfUpdate(SelfUpdate),
     FetchSelfUpdateProgress(FetchSelfUpdateProgress),
+    DownloadUe4ssl(DownloadUe4ssl),
 }
 
 impl Message {
@@ -58,6 +59,7 @@ impl Message {
             Self::LintMods(msg) => msg.receive(app),
             Self::SelfUpdate(msg) => msg.receive(app),
             Self::FetchSelfUpdateProgress(msg) => msg.receive(app),
+            Self::DownloadUe4ssl(msg) => msg.receive(app),
         }
     }
 }
@@ -188,6 +190,7 @@ impl Integrate {
         mods: Vec<ModSpecification>,
         fsd_pak: PathBuf,
         config: MetaConfig,
+        ue4ssl_zip: Option<PathBuf>,
         tx: Sender<Message>,
         ctx: egui::Context,
     ) -> MessageHandle<HashMap<ModSpecification, SpecFetchProgress>> {
@@ -195,9 +198,17 @@ impl Integrate {
         MessageHandle {
             rid,
             handle: tokio::task::spawn(async move {
-                let res =
-                    integrate_async(store, ctx.clone(), mods, fsd_pak, config, rid, tx.clone())
-                        .await;
+                let res = integrate_async(
+                    store,
+                    ctx.clone(),
+                    mods,
+                    fsd_pak,
+                    config,
+                    ue4ssl_zip,
+                    rid,
+                    tx.clone(),
+                )
+                .await;
                 tx.send(Message::Integrate(Integrate { rid, result: res }))
                     .await
                     .unwrap();
@@ -229,6 +240,58 @@ impl Integrate {
                 }
             }
             app.integrate_rid = None;
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct DownloadUe4ssl {
+    rid: RequestID,
+    path: PathBuf,
+    result: Result<String, IntegrationError>,
+}
+
+impl DownloadUe4ssl {
+    pub fn send(app: &mut App, ctx: &egui::Context) {
+        let rid = app.request_counter.next();
+        let tx = app.tx.clone();
+        let ctx = ctx.clone();
+        let path = app.state.dirs.data_dir.join("ue4ssl").join("UE4SSL.zip");
+        let handle = tokio::spawn(async move {
+            let result = crate::ue4ssl::download_ue4ssl(&path).await;
+            tx.send(Message::DownloadUe4ssl(Self { rid, path, result }))
+                .await
+                .unwrap();
+            ctx.request_repaint();
+        });
+        app.last_action = None;
+        app.download_ue4ssl_rid = Some(MessageHandle {
+            rid,
+            handle,
+            state: (),
+        });
+    }
+
+    fn receive(self, app: &mut App) {
+        if Some(self.rid) == app.download_ue4ssl_rid.as_ref().map(|r| r.rid) {
+            app.download_ue4ssl_rid = None;
+            match self.result {
+                Ok(version) => {
+                    info!("downloaded UE4SSL {version} to {}", self.path.display());
+                    app.state.config.ue4ssl_zip_path = Some(self.path.clone());
+                    app.state.config.save().unwrap();
+                    if let Some(window) = &mut app.settings_window {
+                        window.set_ue4ssl_zip_path(&self.path);
+                    }
+                    app.last_action = Some(LastAction::success(format!(
+                        "downloaded UE4SSL {version}"
+                    )));
+                }
+                Err(e) => {
+                    error!("{}", e);
+                    app.last_action = Some(LastAction::failure(e.to_string()));
+                }
+            }
         }
     }
 }
@@ -357,6 +420,7 @@ async fn integrate_async(
     mod_specs: Vec<ModSpecification>,
     fsd_pak: PathBuf,
     config: MetaConfig,
+    ue4ssl_zip: Option<PathBuf>,
     rid: RequestID,
     message_tx: Sender<Message>,
 ) -> Result<(), IntegrationError> {
@@ -397,11 +461,12 @@ async fn integrate_async(
 
     let paths = store.fetch_mods_ordered(&urls, update, Some(tx)).await?;
 
-    tokio::task::spawn_blocking(|| {
+    tokio::task::spawn_blocking(move || {
         crate::integrate::integrate(
             fsd_pak,
             config,
             to_integrate.into_iter().zip(paths).collect(),
+            ue4ssl_zip.as_deref(),
         )
     })
     .await??;

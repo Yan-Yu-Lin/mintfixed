@@ -5,6 +5,7 @@ pub mod integrate;
 pub mod mod_lints;
 pub mod providers;
 pub mod state;
+pub mod ue4ssl;
 
 use std::ops::Deref;
 use std::{
@@ -146,6 +147,7 @@ pub async fn resolve_unordered_and_integrate<P: AsRef<Path>>(
         game_path,
         state.config.deref().into(),
         to_integrate.into_iter().zip(paths).collect(),
+        state.config.ue4ssl_zip_path.as_deref(),
     )
 }
 

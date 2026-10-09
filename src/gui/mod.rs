@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime};
 use std::{
     collections::{HashMap, HashSet},
     ops::DerefMut,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use eframe::egui::{Button, CollapsingHeader, RichText};
@@ -160,6 +160,7 @@ pub struct App {
     self_update_rid: Option<MessageHandle<SelfUpdateProgress>>,
     original_exe_path: Option<PathBuf>,
     problematic_mod_id: Option<u32>,
+    download_ue4ssl_rid: Option<MessageHandle<()>>,
 }
 
 #[derive(Default)]
@@ -252,6 +253,7 @@ impl App {
             self_update_rid: None,
             original_exe_path: None,
             problematic_mod_id: None,
+            download_ue4ssl_rid: None,
         })
     }
 
@@ -1011,6 +1013,7 @@ impl App {
         if let Some(window) = &mut self.settings_window {
             let mut open = true;
             let mut try_save = false;
+            let mut download_ue4ssl = false;
             egui::Window::new("Settings")
                 .open(&mut open)
                 .resizable(false)
@@ -1048,6 +1051,50 @@ impl App {
                                     window.drg_pak_path = fsd_pak.to_string_lossy().to_string();
                                     window.drg_pak_path_err = None;
                                 }
+                        });
+                        ui.end_row();
+
+                        let mut job = LayoutJob::default();
+                        job.append(
+                            "UE4SSL.zip",
+                            0.0,
+                            TextFormat {
+                                color: ui.visuals().text_color(),
+                                underline: Stroke::new(1.0, ui.visuals().text_color()),
+                                ..Default::default()
+                            },
+                        );
+                        ui.label(job).on_hover_cursor(egui::CursorIcon::Help).on_hover_text("UE4SS.Lite runtime package, only needed for mods that contain a native DLL (dll/main.dll) or a JS mod (js/main.js).\nIt is not bundled with mint; pick a copy you already have (e.g. MintCat's cache) or download it from MintCat's release server.\nOn Linux/Proton the game also needs the Steam launch option WINEDLLOVERRIDES=\"dwmapi=n,b\" %command%");
+                        ui.horizontal(|ui| {
+                            let res = ui.add(
+                                egui::TextEdit::singleline(&mut window.ue4ssl_zip_path)
+                                    .desired_width(200.0)
+                                    .hint_text("optional"),
+                            );
+                            if res.changed() {
+                                window.ue4ssl_zip_path_err = None;
+                            }
+                            if is_committed(&res) {
+                                try_save = true;
+                            }
+                            if ui.button("browse").clicked()
+                                && let Some(zip) = rfd::FileDialog::new()
+                                    .add_filter("UE4SSL.zip", &["zip"])
+                                    .pick_file()
+                            {
+                                window.set_ue4ssl_zip_path(&zip);
+                            }
+                            let downloading = self.download_ue4ssl_rid.is_some();
+                            if ui
+                                .add_enabled(!downloading, egui::Button::new("download"))
+                                .on_hover_text("Download UE4SSL (from MintCat's server)")
+                                .clicked()
+                            {
+                                download_ue4ssl = true;
+                            }
+                            if downloading {
+                                ui.spinner();
+                            }
                         });
                         ui.end_row();
 
@@ -1106,22 +1153,37 @@ impl App {
                     });
 
                     ui.with_layout(egui::Layout::right_to_left(Align::TOP), |ui| {
-                        if ui.add_enabled(window.drg_pak_path_err.is_none(), egui::Button::new("save")).clicked() {
+                        if ui.add_enabled(window.drg_pak_path_err.is_none() && window.ue4ssl_zip_path_err.is_none(), egui::Button::new("save")).clicked() {
                             try_save = true;
                         }
                         if let Some(error) = &window.drg_pak_path_err {
                             ui.colored_label(ui.visuals().error_fg_color, error);
                         }
+                        if let Some(error) = &window.ue4ssl_zip_path_err {
+                            ui.colored_label(ui.visuals().error_fg_color, error);
+                        }
                     });
 
                 });
-            if try_save {
+            let ue4ssl_zip_path = window.ue4ssl_zip_path.trim().to_string();
+            if download_ue4ssl {
+                message::DownloadUe4ssl::send(self, ctx);
+            } else if try_save {
+                let ue4ssl_check = if ue4ssl_zip_path.is_empty() {
+                    Ok(())
+                } else {
+                    crate::ue4ssl::validate_ue4ssl_zip(Path::new(&ue4ssl_zip_path))
+                };
                 if let Err(e) = is_drg_pak(&window.drg_pak_path) {
                     window.drg_pak_path_err = Some(e.to_string());
+                } else if let Err(e) = ue4ssl_check {
+                    window.ue4ssl_zip_path_err = Some(e.to_string());
                 } else {
                     self.state.config.drg_pak_path = Some(PathBuf::from(
                         self.settings_window.take().unwrap().drg_pak_path,
                     ));
+                    self.state.config.ue4ssl_zip_path =
+                        (!ue4ssl_zip_path.is_empty()).then(|| PathBuf::from(ue4ssl_zip_path));
                     self.state.config.save().unwrap();
                 }
             } else if !open {
@@ -1664,6 +1726,8 @@ impl WindowProviderParameters {
 struct WindowSettings {
     drg_pak_path: String,
     drg_pak_path_err: Option<String>,
+    ue4ssl_zip_path: String,
+    ue4ssl_zip_path_err: Option<String>,
 }
 
 impl WindowSettings {
@@ -1674,10 +1738,23 @@ impl WindowSettings {
             .as_ref()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
+        let ue4ssl_zip_path = state
+            .config
+            .ue4ssl_zip_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
         Self {
             drg_pak_path: path,
             drg_pak_path_err: None,
+            ue4ssl_zip_path,
+            ue4ssl_zip_path_err: None,
         }
+    }
+
+    fn set_ue4ssl_zip_path(&mut self, path: &Path) {
+        self.ue4ssl_zip_path = path.to_string_lossy().to_string();
+        self.ue4ssl_zip_path_err = None;
     }
 }
 
@@ -1788,6 +1865,7 @@ impl eframe::App for App {
                                     mods,
                                     self.state.config.drg_pak_path.as_ref().unwrap().clone(),
                                     self.state.config.deref().into(),
+                                    self.state.config.ue4ssl_zip_path.clone(),
                                     self.tx.clone(),
                                     ctx.clone(),
                                 ));
