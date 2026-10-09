@@ -508,6 +508,124 @@ pub fn uninstall(binaries: &Path) -> Result<(), IntegrationError> {
     Ok(())
 }
 
+/// Static release manifest MintCat uses for its own downloads (international mirror).
+pub const MINTCAT_MANIFEST_URL: &str =
+    "https://yuri-oss-sg.oss-ap-southeast-1.aliyuncs.com/update.json";
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManifestItem {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    channel: Option<String>,
+    #[serde(default)]
+    platform: Option<String>,
+    #[serde(default)]
+    latest_version: Option<String>,
+    #[serde(default)]
+    file_size: Option<u64>,
+    #[serde(default)]
+    md5: Option<String>,
+    #[serde(default)]
+    download_url: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+}
+
+/// Picks the stable windows `ue4ssl` entry and resolves its download URL relative to the manifest.
+fn resolve_ue4ssl_asset(
+    manifest_url: &str,
+    items: &[ManifestItem],
+) -> Result<(String, Option<u64>, Option<String>, String), IntegrationError> {
+    let eq = |v: &Option<String>, want: &str| {
+        v.as_deref()
+            .unwrap_or_default()
+            .trim()
+            .eq_ignore_ascii_case(want)
+    };
+    let item = items
+        .iter()
+        .find(|i| {
+            eq(&i.name, "ue4ssl")
+                && (i.channel.is_none() || eq(&i.channel, "stable"))
+                && (i.platform.is_none() || eq(&i.platform, "windows"))
+        })
+        .ok_or_else(|| generic("MintCat's update manifest has no stable ue4ssl entry"))?;
+    let relative = item
+        .download_url
+        .as_ref()
+        .or(item.url.as_ref())
+        .or(item.path.as_ref())
+        .cloned()
+        .unwrap_or_else(|| "UE4SSL.zip".to_string());
+    let url = url::Url::parse(manifest_url)
+        .and_then(|base| base.join(relative.trim_start_matches('/')))
+        .map_err(|e| generic(format!("bad UE4SSL download url {relative:?}: {e}")))?;
+    Ok((
+        url.to_string(),
+        item.file_size,
+        item.md5.clone(),
+        item.latest_version.clone().unwrap_or_default(),
+    ))
+}
+
+/// Downloads UE4SSL.zip from MintCat's release server to `dest`, checking its size, md5 and
+/// contents. Returns the version string from the manifest.
+pub async fn download_ue4ssl(dest: &Path) -> Result<String, IntegrationError> {
+    let client = reqwest::Client::new();
+    let fetch_err = |e: reqwest::Error| generic(format!("UE4SSL download failed: {e}"));
+    let items: Vec<ManifestItem> = client
+        .get(MINTCAT_MANIFEST_URL)
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .map_err(fetch_err)?
+        .json()
+        .await
+        .map_err(fetch_err)?;
+    let (url, size, md5, version) = resolve_ue4ssl_asset(MINTCAT_MANIFEST_URL, &items)?;
+    info!("downloading UE4SSL {version} from {url}");
+    let data = client
+        .get(&url)
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .map_err(fetch_err)?
+        .bytes()
+        .await
+        .map_err(fetch_err)?;
+    if let Some(size) = size
+        && size != data.len() as u64
+    {
+        return Err(generic(format!(
+            "UE4SSL download is {} bytes, expected {size}",
+            data.len()
+        )));
+    }
+    if let Some(md5) = md5 {
+        let actual = hex::encode(<md5::Md5 as md5::Digest>::digest(&data));
+        if !actual.eq_ignore_ascii_case(md5.trim()) {
+            return Err(generic(format!(
+                "UE4SSL download md5 mismatch: got {actual}, expected {md5}"
+            )));
+        }
+    }
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = dest.with_extension("zip.part");
+    fs::write(&tmp, &data)?;
+    if let Err(e) = validate_ue4ssl_zip(&tmp) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    fs::rename(&tmp, dest)?;
+    Ok(version)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -776,5 +894,46 @@ mod tests {
         install(&bin, None, &[]).unwrap();
         assert!(!bin.join("ue4ss").exists());
         assert!(!bin.join("dwmapi.dll").exists());
+    }
+
+    #[test]
+    fn manifest_resolution() {
+        let items: Vec<ManifestItem> = serde_json::from_str(
+            r#"[
+                {"name":"ue4ssl","channel":"beta","downloadUrl":"releases/beta/UE4SSL.zip"},
+                {"name":"ue4ssl","platform":"windows","channel":"stable","fileSize":10,
+                 "md5":"abc","latestVersion":"0.31.0",
+                 "downloadUrl":"releases/ue4ssl/windows/stable/0.31.0/UE4SSL.zip"}
+            ]"#,
+        )
+        .unwrap();
+        let (url, size, md5, version) =
+            resolve_ue4ssl_asset("https://example.org/a/update.json", &items).unwrap();
+        assert_eq!(
+            url,
+            "https://example.org/a/releases/ue4ssl/windows/stable/0.31.0/UE4SSL.zip"
+        );
+        assert_eq!(size, Some(10));
+        assert_eq!(md5.as_deref(), Some("abc"));
+        assert_eq!(version, "0.31.0");
+    }
+}
+
+#[cfg(test)]
+mod network_tests {
+    /// Real download from MintCat's server. Ignored by default (network); run with
+    /// `cargo test -- --ignored download_from_mintcat`.
+    #[tokio::test]
+    #[ignore]
+    async fn download_from_mintcat() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("ue4ssl").join("UE4SSL.zip");
+        let version = super::download_ue4ssl(&dest).await.unwrap();
+        assert!(!version.is_empty());
+        super::validate_ue4ssl_zip(&dest).unwrap();
+        println!(
+            "downloaded UE4SSL {version}, {} bytes",
+            dest.metadata().unwrap().len()
+        );
     }
 }
