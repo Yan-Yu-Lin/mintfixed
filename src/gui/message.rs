@@ -184,6 +184,7 @@ pub struct Integrate {
 }
 
 impl Integrate {
+    #[allow(clippy::too_many_arguments)]
     pub fn send(
         rc: &mut RequestCounter,
         store: Arc<ModStore>,
@@ -414,6 +415,7 @@ impl CheckUpdates {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn integrate_async(
     store: Arc<ModStore>,
     ctx: egui::Context,

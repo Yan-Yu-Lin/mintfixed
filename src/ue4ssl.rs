@@ -618,3 +618,288 @@ pub async fn download_ue4ssl(dest: &Path) -> Result<String, IntegrationError> {
     fs::rename(&tmp, dest)?;
     Ok(version)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zip::write::SimpleFileOptions;
+
+    fn make_zip(files: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut writer = zip::ZipWriter::new(Cursor::new(vec![]));
+        for (name, data) in files {
+            writer
+                .start_file(*name, SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(data).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
+    }
+
+    fn classify(files: &[(&str, &[u8])]) -> Result<ModContent, IntegrationError> {
+        classify_mod(Box::new(Cursor::new(make_zip(files))))
+    }
+
+    fn read_all(mut r: Box<dyn ReadSeek>) -> Vec<u8> {
+        let mut buf = vec![];
+        r.read_to_end(&mut buf).unwrap();
+        buf
+    }
+
+    #[test]
+    fn classify_pak_only() {
+        let content = classify(&[("Mod.pak", b"PAK"), ("README.md", b"hi")]).unwrap();
+        assert_eq!(read_all(content.pak.unwrap()), b"PAK");
+        assert!(content.dll.is_none());
+        assert!(content.js.is_empty());
+        assert!(!content.needs_ue4ssl());
+    }
+
+    #[test]
+    fn classify_raw_pak_is_passed_through() {
+        let content = classify_mod(Box::new(Cursor::new(b"not a zip".to_vec()))).unwrap();
+        assert_eq!(read_all(content.pak.unwrap()), b"not a zip");
+        assert!(!content.needs_ue4ssl());
+    }
+
+    #[test]
+    fn classify_dll_only() {
+        let content = classify(&[("dll/main.dll", b"DLL"), ("VERSION", b"1")]).unwrap();
+        assert!(content.pak.is_none());
+        assert_eq!(content.dll.as_deref(), Some(&b"DLL"[..]));
+        assert!(content.js.is_empty());
+        assert!(content.needs_ue4ssl());
+    }
+
+    #[test]
+    fn classify_dll_js_pak() {
+        let content = classify(&[
+            ("other.dll", b"OTHER"),
+            ("Mod/js/main.js", b"MAIN"),
+            ("Mod/js/lib/util.js", b"UTIL"),
+            ("Mod/dll/main.dll", b"DLL"),
+            ("Mod/Mod.pak", b"PAK"),
+            ("Mod/README.md", b"hi"),
+        ])
+        .unwrap();
+        assert_eq!(read_all(content.pak.unwrap()), b"PAK");
+        // dll/main.dll wins over an earlier unrelated dll
+        assert_eq!(content.dll.as_deref(), Some(&b"DLL"[..]));
+        let mut js = content.js;
+        js.sort();
+        assert_eq!(
+            js,
+            vec![
+                (PathBuf::from("lib/util.js"), b"UTIL".to_vec()),
+                (PathBuf::from("main.js"), b"MAIN".to_vec()),
+            ]
+        );
+    }
+
+    #[test]
+    fn classify_ignores_loader_dlls() {
+        let content = classify(&[
+            ("dwmapi.dll", b"PROXY"),
+            ("ue4ss/UE4SSL.dll", b"LOADER"),
+            ("Mod.pak", b"PAK"),
+        ])
+        .unwrap();
+        assert!(content.dll.is_none());
+        let err = classify(&[("dwmapi.dll", b"PROXY")]).err().unwrap();
+        assert!(err.to_string().contains("does not contain"));
+    }
+
+    #[test]
+    fn classify_nothing_is_error() {
+        let err = classify(&[("README.md", b"hi")]).err().unwrap();
+        assert!(err.to_string().contains("does not contain"), "{err}");
+    }
+
+    #[test]
+    fn folder_names() {
+        assert_eq!(
+            mod_folder_name("AntiLag-0.1.0-alpha.5-r9-personal.zip"),
+            "AntiLag-0.1.0-alpha.5-r9-personal.zip"
+        );
+        assert_eq!(mod_folder_name("a:b/c?.zip"), "a_b_c_.zip");
+        assert_eq!(mod_folder_name("CON.zip"), "_CON.zip");
+        assert_eq!(mod_folder_name("shared"), "_shared");
+        assert_eq!(mod_folder_name(".mint-managed.json"), "_.mint-managed.json");
+        assert_eq!(mod_folder_name("  "), "mod");
+    }
+
+    fn write_runtime_zip(dir: &Path) -> PathBuf {
+        let path = dir.join("UE4SSL.zip");
+        fs::write(
+            &path,
+            make_zip(&[
+                ("dwmapi.dll", b"PROXY"),
+                ("ue4ss/UE4SSL.dll", b"LOADER"),
+                ("ue4ss/mods/UE4SSL.JavaScript/main.dll", b"JSENGINE"),
+                ("ue4ss/mods/UE4SSL.JavaScript.Framework/js/main.js", b"FW"),
+            ]),
+        )
+        .unwrap();
+        path
+    }
+
+    fn ue4ssl_mod(folder: &str, dll: Option<&[u8]>, js: &[(&str, &[u8])]) -> Ue4sslMod {
+        Ue4sslMod {
+            folder: folder.to_string(),
+            dll: dll.map(<[u8]>::to_vec),
+            js: js
+                .iter()
+                .map(|(p, d)| (PathBuf::from(p), d.to_vec()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn validate_runtime_zip() {
+        let tmp = tempfile::tempdir().unwrap();
+        validate_ue4ssl_zip(&write_runtime_zip(tmp.path())).unwrap();
+        let bad = tmp.path().join("bad.zip");
+        fs::write(&bad, make_zip(&[("dwmapi.dll", b"x")])).unwrap();
+        assert!(validate_ue4ssl_zip(&bad).is_err());
+        let not_zip = tmp.path().join("not.zip");
+        fs::write(&not_zip, b"nope").unwrap();
+        assert!(validate_ue4ssl_zip(&not_zip).is_err());
+    }
+
+    #[test]
+    fn install_requires_runtime_zip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = install(tmp.path(), None, &[ue4ssl_mod("A.zip", Some(b"A"), &[])])
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("no UE4SSL.zip"), "{err}");
+        assert!(!tmp.path().join("ue4ss").exists());
+    }
+
+    #[test]
+    fn install_and_uninstall_only_touch_managed_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let zip = write_runtime_zip(tmp.path());
+        let bin = tmp.path().join("Win64");
+        let mods = bin.join("ue4ss/mods");
+        // pre-existing foreign files that mint must leave alone
+        fs::create_dir_all(mods.join("Foreign")).unwrap();
+        fs::write(mods.join("Foreign/main.dll"), b"F").unwrap();
+        fs::write(bin.join("FSD-Win64-Shipping.exe"), b"EXE").unwrap();
+        fs::write(bin.join("x3daudio1_7.dll"), b"HOOK").unwrap();
+
+        install(
+            &bin,
+            Some(&zip),
+            &[
+                ue4ssl_mod("AntiLag.zip", Some(b"AL"), &[("main.js", b"JS")]),
+                ue4ssl_mod("CDCompat.zip", Some(b"CD"), &[]),
+            ],
+        )
+        .unwrap();
+        assert_eq!(fs::read(bin.join("dwmapi.dll")).unwrap(), b"PROXY");
+        assert_eq!(fs::read(bin.join("ue4ss/UE4SSL.dll")).unwrap(), b"LOADER");
+        assert_eq!(fs::read(mods.join("AntiLag.zip/main.dll")).unwrap(), b"AL");
+        assert_eq!(fs::read(mods.join("AntiLag.zip/js/main.js")).unwrap(), b"JS");
+        assert_eq!(fs::read(mods.join("CDCompat.zip/main.dll")).unwrap(), b"CD");
+        assert!(!mods.join("AntiLag.zip/main.dll.tmp").exists());
+        let manifest = read_manifest(&bin).unwrap().unwrap();
+        assert!(!manifest.created_ue4ss_dir);
+        assert_eq!(
+            manifest.runtime_files,
+            BTreeSet::from(["dwmapi.dll".to_string(), "ue4ss/UE4SSL.dll".to_string()])
+        );
+        assert_eq!(
+            manifest.runtime_mod_folders,
+            BTreeSet::from([
+                "UE4SSL.JavaScript".to_string(),
+                "UE4SSL.JavaScript.Framework".to_string()
+            ])
+        );
+
+        // the mod's own log survives a reinstall; a removed mod's folder is deleted
+        fs::write(mods.join("AntiLag.zip/AntiLag.log"), b"log").unwrap();
+        install(
+            &bin,
+            Some(&zip),
+            &[ue4ssl_mod("AntiLag.zip", Some(b"AL2"), &[])],
+        )
+        .unwrap();
+        assert_eq!(fs::read(mods.join("AntiLag.zip/main.dll")).unwrap(), b"AL2");
+        assert!(!mods.join("AntiLag.zip/js").exists());
+        assert!(mods.join("AntiLag.zip/AntiLag.log").exists());
+        assert!(!mods.join("CDCompat.zip").exists());
+        // runtime ownership is not lost on reinstall even though the files now exist
+        let manifest = read_manifest(&bin).unwrap().unwrap();
+        assert!(manifest.runtime_files.contains("dwmapi.dll"));
+        assert!(manifest.runtime_mod_folders.contains("UE4SSL.JavaScript"));
+
+        uninstall(&bin).unwrap();
+        assert!(!bin.join("dwmapi.dll").exists());
+        assert!(!bin.join("ue4ss/UE4SSL.dll").exists());
+        assert!(!mods.join("AntiLag.zip").exists());
+        assert!(!mods.join("UE4SSL.JavaScript").exists());
+        assert!(!mods.join(MANIFEST_FILE_NAME).exists());
+        assert_eq!(fs::read(mods.join("Foreign/main.dll")).unwrap(), b"F");
+        assert!(bin.join("FSD-Win64-Shipping.exe").exists());
+        assert!(bin.join("x3daudio1_7.dll").exists());
+        // second uninstall is a no-op
+        uninstall(&bin).unwrap();
+    }
+
+    #[test]
+    fn uninstall_keeps_preexisting_runtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let zip = write_runtime_zip(tmp.path());
+        let bin = tmp.path().join("Win64");
+        // loader already installed by another tool
+        fs::create_dir_all(bin.join("ue4ss/mods/UE4SSL.JavaScript")).unwrap();
+        fs::write(bin.join("dwmapi.dll"), b"OLD").unwrap();
+        fs::write(bin.join("ue4ss/UE4SSL.dll"), b"OLD").unwrap();
+        fs::write(bin.join("ue4ss/mods/UE4SSL.JavaScript/main.dll"), b"OLD").unwrap();
+
+        install(&bin, Some(&zip), &[ue4ssl_mod("M.zip", Some(b"M"), &[])]).unwrap();
+        uninstall(&bin).unwrap();
+        assert!(bin.join("dwmapi.dll").exists());
+        assert!(bin.join("ue4ss/UE4SSL.dll").exists());
+        assert!(bin.join("ue4ss/mods/UE4SSL.JavaScript/main.dll").exists());
+        // the framework folder did not exist before, so mint removed it
+        assert!(!bin.join("ue4ss/mods/UE4SSL.JavaScript.Framework").exists());
+        assert!(!bin.join("ue4ss/mods/M.zip").exists());
+    }
+
+    #[test]
+    fn fresh_install_cleans_up_ue4ss_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let zip = write_runtime_zip(tmp.path());
+        let bin = tmp.path().join("Win64");
+        fs::create_dir_all(&bin).unwrap();
+        install(&bin, Some(&zip), &[ue4ssl_mod("M.zip", None, &[("main.js", b"JS")])]).unwrap();
+        fs::write(bin.join("ue4ss/UE4SS.log"), b"log").unwrap();
+        // empty profile = remove everything mint installed
+        install(&bin, None, &[]).unwrap();
+        assert!(!bin.join("ue4ss").exists());
+        assert!(!bin.join("dwmapi.dll").exists());
+    }
+
+    #[test]
+    fn manifest_resolution() {
+        let items: Vec<ManifestItem> = serde_json::from_str(
+            r#"[
+                {"name":"ue4ssl","channel":"beta","downloadUrl":"releases/beta/UE4SSL.zip"},
+                {"name":"ue4ssl","platform":"windows","channel":"stable","fileSize":10,
+                 "md5":"abc","latestVersion":"0.31.0",
+                 "downloadUrl":"releases/ue4ssl/windows/stable/0.31.0/UE4SSL.zip"}
+            ]"#,
+        )
+        .unwrap();
+        let (url, size, md5, version) =
+            resolve_ue4ssl_asset("https://example.org/a/update.json", &items).unwrap();
+        assert_eq!(
+            url,
+            "https://example.org/a/releases/ue4ssl/windows/stable/0.31.0/UE4SSL.zip"
+        );
+        assert_eq!(size, Some(10));
+        assert_eq!(md5.as_deref(), Some("abc"));
+        assert_eq!(version, "0.31.0");
+    }
+}
