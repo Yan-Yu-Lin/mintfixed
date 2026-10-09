@@ -648,17 +648,17 @@ mod tests {
     #[test]
     fn classify_pak_only() {
         let content = classify(&[("Mod.pak", b"PAK"), ("README.md", b"hi")]).unwrap();
-        assert_eq!(read_all(content.pak.unwrap()), b"PAK");
+        assert!(!content.needs_ue4ssl());
         assert!(content.dll.is_none());
         assert!(content.js.is_empty());
-        assert!(!content.needs_ue4ssl());
+        assert_eq!(read_all(content.pak.unwrap()), b"PAK");
     }
 
     #[test]
     fn classify_raw_pak_is_passed_through() {
         let content = classify_mod(Box::new(Cursor::new(b"not a zip".to_vec()))).unwrap();
-        assert_eq!(read_all(content.pak.unwrap()), b"not a zip");
         assert!(!content.needs_ue4ssl());
+        assert_eq!(read_all(content.pak.unwrap()), b"not a zip");
     }
 
     #[test]
