@@ -200,7 +200,7 @@ def main() -> None:
             unmapped.append(f"{m['display_name']} ({m['source_type']})")
             return None
         enabled = bool(m["is_enabled"])
-        if m["used_version"]:
+        if m["used_version"] not in ("", "-"):
             pinned.append(f"{m['display_name']} @ {m['used_version']}")
         if m["source_type"] == "Local" and enabled:
             path = Path(spec)
