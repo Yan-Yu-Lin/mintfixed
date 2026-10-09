@@ -785,49 +785,71 @@ impl App {
                 }
             };
 
-            let mut ui_item =
-                |ctx: &mut Ctx, ui: &mut Ui, mc: &mut ModOrGroup, row_index: usize| {
-                    ui.scope(|ui| {
-                        ui.visuals_mut().widgets.hovered.weak_bg_fill = colors::DARK_RED;
-                        ui.visuals_mut().widgets.active.weak_bg_fill = colors::DARKER_RED;
-                        if ui
-                            .add(Button::new(" 🗑 "))
-                            .on_hover_text_at_pointer("Delete mod")
-                            .clicked()
-                        {
-                            ctx.btn_remove = Some(row_index);
-                        };
-                    });
+            let mut ui_item = |ctx: &mut Ctx,
+                               ui: &mut Ui,
+                               mc: &mut ModOrGroup,
+                               row_index: usize| {
+                ui.scope(|ui| {
+                    ui.visuals_mut().widgets.hovered.weak_bg_fill = colors::DARK_RED;
+                    ui.visuals_mut().widgets.active.weak_bg_fill = colors::DARKER_RED;
+                    if ui
+                        .add(Button::new(" 🗑 "))
+                        .on_hover_text_at_pointer("Delete mod")
+                        .clicked()
+                    {
+                        ctx.btn_remove = Some(row_index);
+                    };
+                });
 
-                    match mc {
-                        ModOrGroup::Individual(mc) => {
-                            ui_mod(ctx, ui, None, row_index, mc);
-                        }
-                        ModOrGroup::Group {
-                            group_name,
-                            enabled,
-                        } => {
-                            if ui
-                                .add(toggle_switch(enabled))
-                                .on_hover_text_at_pointer("Enabled?")
-                                .changed()
-                            {
-                                ctx.needs_save = true;
-                            }
-                            ui.collapsing(group_name.as_str(), |ui| {
-                                for (index, m) in groups
-                                    .get_mut(group_name)
-                                    .unwrap()
-                                    .mods
-                                    .iter_mut()
-                                    .enumerate()
-                                {
-                                    ui.horizontal(|ui| ui_mod(ctx, ui, Some(group_name), index, m));
-                                }
-                            });
-                        }
+                match mc {
+                    ModOrGroup::Individual(mc) => {
+                        ui_mod(ctx, ui, None, row_index, mc);
                     }
-                };
+                    ModOrGroup::Group {
+                        group_name,
+                        enabled,
+                    } => {
+                        if ui
+                            .add(toggle_switch(enabled))
+                            .on_hover_text_at_pointer("Enabled?")
+                            .changed()
+                        {
+                            ctx.needs_save = true;
+                        }
+                        ui.collapsing(group_name.as_str(), |ui| {
+                            // Rows scrolled out of view only reserve their height, so a big
+                            // expanded group costs as much as the rows on screen. While a
+                            // search wants to scroll to a match, every row is drawn.
+                            let height_id = ui.id().with("row_height");
+                            let mut row_height = ui
+                                .data(|d| d.get_temp::<f32>(height_id))
+                                .unwrap_or(ui.spacing().interact_size.y);
+                            for (index, m) in groups
+                                .get_mut(group_name)
+                                .unwrap()
+                                .mods
+                                .iter_mut()
+                                .enumerate()
+                            {
+                                let rect = egui::Rect::from_min_size(
+                                    ui.cursor().min,
+                                    egui::vec2(ui.available_width(), row_height),
+                                );
+                                if !ctx.scroll_to_match && !ui.is_rect_visible(rect) {
+                                    ui.allocate_space(egui::vec2(0.0, row_height));
+                                    continue;
+                                }
+                                row_height = ui
+                                    .horizontal(|ui| ui_mod(ctx, ui, Some(group_name), index, m))
+                                    .response
+                                    .rect
+                                    .height();
+                            }
+                            ui.data_mut(|d| d.insert_temp(height_id, row_height));
+                        });
+                    }
+                }
+            };
 
             if let Some(sorting_config) = sorting_config {
                 let comp = sort_mods(sorting_config);
