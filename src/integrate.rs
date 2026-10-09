@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{BufReader, BufWriter, Cursor, ErrorKind, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
@@ -199,6 +199,13 @@ pub enum IntegrationError {
     JoinError { source: tokio::task::JoinError },
     #[snafu(transparent)]
     LintError { source: LintError },
+    #[snafu(display(
+        "these mods contain native DLLs that have not been confirmed yet: {}",
+        mods.iter().map(|m| m.name.as_str()).collect::<Vec<_>>().join(", ")
+    ))]
+    NativeModsNeedConfirmation {
+        mods: Vec<crate::ue4ssl::UnconfirmedNativeMod>,
+    },
     #[snafu(display("self update failed: {source:?}"))]
     SelfUpdateFailed {
         source: Box<dyn std::error::Error + Send + Sync>,
@@ -218,12 +225,22 @@ impl IntegrationError {
     }
 }
 
+/// Settings for installing UE4SS.Lite mods (see [`crate::ue4ssl`]).
+#[derive(Debug, Clone, Default)]
+pub struct Ue4sslOptions {
+    /// UE4SSL.zip runtime package; required if any mod has a DLL or JS part.
+    pub zip: Option<PathBuf>,
+    /// SHA-256 hashes of native DLLs the user has confirmed. Integration refuses to install any
+    /// other native DLL and returns [`IntegrationError::NativeModsNeedConfirmation`].
+    pub confirmed_native_dlls: BTreeSet<String>,
+}
+
 #[tracing::instrument(skip_all)]
 pub fn integrate<P: AsRef<Path>>(
     path_pak: P,
     config: MetaConfig,
     mods: Vec<(ModInfo, PathBuf)>,
-    ue4ssl_zip: Option<&Path>,
+    ue4ssl: &Ue4sslOptions,
 ) -> Result<(), IntegrationError> {
     let Ok(installation) = DRGInstallation::from_pak_path(&path_pak) else {
         return Err(IntegrationError::DrgInstallationNotFound {
@@ -233,7 +250,15 @@ pub fn integrate<P: AsRef<Path>>(
     let path_mod_pak = installation.paks_path().join("mods_P.pak");
 
     // fail before touching the game files if UE4SSL mods can't be installed
-    if ue4ssl_zip.is_none() {
+    let unconfirmed = crate::ue4ssl::unconfirmed_native_mods(
+        mods.iter()
+            .map(|(info, path)| (info.name.as_str(), path.as_path())),
+        &ue4ssl.confirmed_native_dlls,
+    )?;
+    if !unconfirmed.is_empty() {
+        return Err(IntegrationError::NativeModsNeedConfirmation { mods: unconfirmed });
+    }
+    if ue4ssl.zip.is_none() {
         for (mod_info, path) in &mods {
             let kind = crate::ue4ssl::scan_mod_kind(path).map_err(|e| {
                 IntegrationError::CtxtGenericError {
@@ -531,7 +556,11 @@ pub fn integrate<P: AsRef<Path>>(
 
     bundle.finish()?;
 
-    crate::ue4ssl::install(&installation.binaries_directory(), ue4ssl_zip, &ue4ssl_mods)?;
+    crate::ue4ssl::install(
+        &installation.binaries_directory(),
+        ue4ssl.zip.as_deref(),
+        &ue4ssl_mods,
+    )?;
 
     info!(
         "{} mods installed to {}",

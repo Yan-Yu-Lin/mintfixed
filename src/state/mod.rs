@@ -1,7 +1,7 @@
 pub mod config;
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     ops::{Deref, DerefMut},
     path::PathBuf,
     sync::Arc,
@@ -342,6 +342,9 @@ pub struct Config {
     /// UE4SS.Lite runtime package (UE4SSL.zip), needed to install UE4SSL DLL/JS mods.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ue4ssl_zip_path: Option<PathBuf>,
+    /// SHA-256 hashes of native mod DLLs the user agreed to install (see the confirmation dialog).
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub confirmed_native_dlls: BTreeSet<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -417,6 +420,7 @@ impl Default for Config!["0.0.0"] {
             gui_theme: None,
             sorting_config: None,
             ue4ssl_zip_path: None,
+            confirmed_native_dlls: Default::default(),
         }
     }
 }

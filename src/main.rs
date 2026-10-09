@@ -182,6 +182,15 @@ fn init_provider(
     Ok(state.store.add_provider(factory, params)?)
 }
 
+fn confirm_native_mods(mods: &[mint::ue4ssl::UnconfirmedNativeMod]) -> bool {
+    eprintln!("{}", mint::ue4ssl::native_confirmation_text(mods));
+    dialoguer::Confirm::with_theme(&dialoguer::theme::ColorfulTheme::default())
+        .with_prompt("Install these native DLL mods?")
+        .default(false)
+        .interact()
+        .unwrap_or(false)
+}
+
 fn get_pak_path(state: &State, arg: &Option<PathBuf>) -> Result<PathBuf> {
     arg.as_ref()
         .or_else(|| state.config.drg_pak_path.as_ref())
@@ -206,6 +215,7 @@ async fn action_integrate(dirs: Dirs, action: ActionIntegrate) -> Result<()> {
         &mod_specs,
         action.update,
         init_provider,
+        confirm_native_mods,
     )
     .await
     .map_err(|e| anyhow!("{}", e))
@@ -227,6 +237,7 @@ async fn action_integrate_profile(dirs: Dirs, action: ActionIntegrateProfile) ->
         &mods,
         action.update,
         init_provider,
+        confirm_native_mods,
     )
     .await
     .map_err(|e| anyhow!("{}", e))

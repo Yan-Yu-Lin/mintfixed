@@ -147,7 +147,10 @@ pub async fn resolve_unordered_and_integrate<P: AsRef<Path>>(
         game_path,
         state.config.deref().into(),
         to_integrate.into_iter().zip(paths).collect(),
-        state.config.ue4ssl_zip_path.as_deref(),
+        &integrate::Ue4sslOptions {
+            zip: state.config.ue4ssl_zip_path.clone(),
+            confirmed_native_dlls: state.config.confirmed_native_dlls.clone(),
+        },
     )
 }
 
@@ -199,16 +202,20 @@ pub async fn resolve_ordered(
         .await?)
 }
 
-pub async fn resolve_unordered_and_integrate_with_provider_init<P, F>(
+/// `confirm_native` is asked once for native DLLs that were not confirmed before; returning true
+/// remembers their hashes in the config and retries.
+pub async fn resolve_unordered_and_integrate_with_provider_init<P, F, C>(
     game_path: P,
     state: &mut State,
     mod_specs: &[ModSpecification],
     update: bool,
     init: F,
+    confirm_native: C,
 ) -> Result<(), MintError>
 where
     P: AsRef<Path>,
     F: Fn(&mut State, String, &ProviderFactory) -> Result<(), MintError>,
+    C: Fn(&[ue4ssl::UnconfirmedNativeMod]) -> bool,
 {
     loop {
         match resolve_unordered_and_integrate(&game_path, state, mod_specs, update).await {
@@ -218,6 +225,13 @@ where
                     && let ProviderError::NoProvider { url, factory } = source =>
             {
                 init(state, url.clone(), factory)?
+            }
+            Err(IntegrationError::NativeModsNeedConfirmation { mods }) if confirm_native(&mods) => {
+                state
+                    .config
+                    .confirmed_native_dlls
+                    .extend(mods.into_iter().map(|m| m.dll_sha256));
+                state.config.save()?;
             }
             Err(e) => Err(e)?,
         }

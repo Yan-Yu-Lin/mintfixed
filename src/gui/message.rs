@@ -191,7 +191,7 @@ impl Integrate {
         mods: Vec<ModSpecification>,
         fsd_pak: PathBuf,
         config: MetaConfig,
-        ue4ssl_zip: Option<PathBuf>,
+        ue4ssl: Ue4sslOptions,
         tx: Sender<Message>,
         ctx: egui::Context,
     ) -> MessageHandle<HashMap<ModSpecification, SpecFetchProgress>> {
@@ -205,7 +205,7 @@ impl Integrate {
                     mods,
                     fsd_pak,
                     config,
-                    ue4ssl_zip,
+                    ue4ssl,
                     rid,
                     tx.clone(),
                 )
@@ -225,6 +225,12 @@ impl Integrate {
                 Ok(()) => {
                     info!("integration complete");
                     app.last_action = Some(LastAction::success("integration complete".to_string()));
+                }
+                Err(IntegrationError::NativeModsNeedConfirmation { mods }) => {
+                    app.native_confirmation = Some(mods);
+                    app.last_action = Some(LastAction::failure(
+                        "native DLL mods need confirmation".to_string(),
+                    ));
                 }
                 Err(ref e)
                     if let IntegrationError::ProviderError { source } = e
@@ -421,7 +427,7 @@ async fn integrate_async(
     mod_specs: Vec<ModSpecification>,
     fsd_pak: PathBuf,
     config: MetaConfig,
-    ue4ssl_zip: Option<PathBuf>,
+    ue4ssl: Ue4sslOptions,
     rid: RequestID,
     message_tx: Sender<Message>,
 ) -> Result<(), IntegrationError> {
@@ -467,7 +473,7 @@ async fn integrate_async(
             fsd_pak,
             config,
             to_integrate.into_iter().zip(paths).collect(),
-            ue4ssl_zip.as_deref(),
+            &ue4ssl,
         )
     })
     .await??;

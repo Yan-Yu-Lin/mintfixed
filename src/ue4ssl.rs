@@ -210,6 +210,21 @@ pub fn scan_mod_kind(path: &Path) -> Result<Ue4sslKind, IntegrationError> {
     })
 }
 
+/// SHA-256 (hex) of the native DLL that would be installed from this mod file, if any.
+pub fn native_dll_sha256(path: &Path) -> Result<Option<String>, IntegrationError> {
+    use sha2::Digest as _;
+    let Ok(mut archive) = zip::ZipArchive::new(BufReader::new(fs::File::open(path)?)) else {
+        return Ok(None);
+    };
+    let Some(i) = locate(&mut archive)?.dll else {
+        return Ok(None);
+    };
+    Ok(Some(hex::encode(sha2::Sha256::digest(read_entry(
+        &mut archive,
+        i,
+    )?))))
+}
+
 /// Folder name for a mod under `ue4ss/mods/`.
 ///
 /// MintCat names the folder after the mod's name verbatim (for local/HTTP mods that is the file
@@ -241,6 +256,47 @@ pub fn mod_folder_name(name: &str) -> String {
         s.insert(0, '_');
     }
     s
+}
+
+/// A mod whose native DLL has not been confirmed by the user yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnconfirmedNativeMod {
+    pub name: String,
+    /// SHA-256 of the DLL; confirming records this hash, so a changed DLL asks again.
+    pub dll_sha256: String,
+}
+
+/// Lists mods that would install a native DLL whose hash is not in `confirmed`.
+pub fn unconfirmed_native_mods<'a>(
+    mods: impl IntoIterator<Item = (&'a str, &'a Path)>,
+    confirmed: &BTreeSet<String>,
+) -> Result<Vec<UnconfirmedNativeMod>, IntegrationError> {
+    let mut unconfirmed = vec![];
+    for (name, path) in mods {
+        if let Some(dll_sha256) = native_dll_sha256(path)?
+            && !confirmed.contains(&dll_sha256)
+        {
+            unconfirmed.push(UnconfirmedNativeMod {
+                name: name.to_string(),
+                dll_sha256,
+            });
+        }
+    }
+    Ok(unconfirmed)
+}
+
+/// Warning shown before native DLL mods are installed for the first time.
+pub fn native_confirmation_text(mods: &[UnconfirmedNativeMod]) -> String {
+    let names = mods
+        .iter()
+        .map(|m| m.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "This profile installs native DLL mods: {names}.\n\
+         Native code runs with the game's full permissions. \
+         Only install DLLs from sources you trust."
+    )
 }
 
 /// Checks that `path` is a zip that looks like a UE4SSL runtime package.
@@ -739,7 +795,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_kind() {
+    fn scan_kind_and_native_confirmation() {
         let tmp = tempfile::tempdir().unwrap();
         let write = |name: &str, files: &[(&str, &[u8])]| {
             let path = tmp.path().join(name);
@@ -770,6 +826,36 @@ mod tests {
                 native: true,
                 js: true
             }
+        );
+
+        // sha256("DLL")
+        let dll_hash = "c4fe7c2ebe956b8f828f33002806fb46594e9b304d3d4621be27c33325096a10";
+        assert_eq!(
+            native_dll_sha256(&native).unwrap().as_deref(),
+            Some(dll_hash)
+        );
+        assert_eq!(native_dll_sha256(&js).unwrap(), None);
+
+        let mods = [
+            ("pak.zip", pak.as_path()),
+            ("js.zip", js.as_path()),
+            ("native.zip", native.as_path()),
+            ("raw.pak", raw.as_path()),
+        ];
+        let unconfirmed = unconfirmed_native_mods(mods, &BTreeSet::new()).unwrap();
+        assert_eq!(
+            unconfirmed,
+            vec![UnconfirmedNativeMod {
+                name: "native.zip".to_string(),
+                dll_sha256: dll_hash.to_string(),
+            }]
+        );
+        assert!(native_confirmation_text(&unconfirmed).contains("native.zip"));
+        let confirmed = BTreeSet::from([dll_hash.to_string()]);
+        assert!(
+            unconfirmed_native_mods(mods, &confirmed)
+                .unwrap()
+                .is_empty()
         );
     }
 

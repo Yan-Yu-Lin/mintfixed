@@ -196,6 +196,7 @@ pub struct App {
     original_exe_path: Option<PathBuf>,
     problematic_mod_id: Option<u32>,
     download_ue4ssl_rid: Option<MessageHandle<()>>,
+    native_confirmation: Option<Vec<crate::ue4ssl::UnconfirmedNativeMod>>,
     /// Which UE4SSL parts each mod file has, keyed by the cached file path (with its mtime).
     ue4ssl_kinds: HashMap<PathBuf, (Option<SystemTime>, crate::ue4ssl::Ue4sslKind)>,
 }
@@ -291,6 +292,7 @@ impl App {
             original_exe_path: None,
             problematic_mod_id: None,
             download_ue4ssl_rid: None,
+            native_confirmation: None,
             ue4ssl_kinds: Default::default(),
         })
     }
@@ -1048,6 +1050,74 @@ impl App {
         }
         for r in to_remove {
             self.open_profiles.remove(&r);
+        }
+    }
+
+    fn start_integrate(&mut self, ctx: &egui::Context) {
+        let mut mod_configs = Vec::new();
+        let active_profile = self.state.mod_data.active_profile.clone();
+        self.state
+            .mod_data
+            .for_each_enabled_mod(&active_profile, |mc| {
+                mod_configs.push(mc.clone());
+            });
+
+        mod_configs.sort_by_key(|k| -k.priority);
+
+        let mods = mod_configs
+            .into_iter()
+            .map(|config| config.spec)
+            .collect::<Vec<_>>();
+
+        self.last_action = None;
+        self.integrate_rid = Some(message::Integrate::send(
+            &mut self.request_counter,
+            self.state.store.clone(),
+            mods,
+            self.state.config.drg_pak_path.as_ref().unwrap().clone(),
+            self.state.config.deref().into(),
+            crate::integrate::Ue4sslOptions {
+                zip: self.state.config.ue4ssl_zip_path.clone(),
+                confirmed_native_dlls: self.state.config.confirmed_native_dlls.clone(),
+            },
+            self.tx.clone(),
+            ctx.clone(),
+        ));
+        self.problematic_mod_id = None;
+    }
+
+    /// One-time warning before native DLL mods are installed; "Install" remembers the DLL hashes
+    /// and restarts the integration.
+    fn show_native_confirmation(&mut self, ctx: &egui::Context) {
+        let Some(mods) = &self.native_confirmation else {
+            return;
+        };
+        let mut install = false;
+        let mut cancel = false;
+        egui::Window::new("Native DLL mods")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label(crate::ue4ssl::native_confirmation_text(mods));
+                ui.horizontal(|ui| {
+                    install = ui.button("Install").clicked();
+                    cancel = ui.button("Cancel").clicked();
+                });
+            });
+        if install {
+            let mods = self.native_confirmation.take().unwrap();
+            self.state
+                .config
+                .confirmed_native_dlls
+                .extend(mods.into_iter().map(|m| m.dll_sha256));
+            self.state.config.save().unwrap();
+            self.start_integrate(ctx);
+        } else if cancel {
+            self.native_confirmation = None;
+            self.last_action = Some(LastAction::failure(
+                "installation cancelled: native DLL mods not confirmed".to_string(),
+            ));
         }
     }
 
@@ -1842,6 +1912,7 @@ impl eframe::App for App {
         self.show_provider_parameters(ctx);
         self.show_profile_windows(ctx);
         self.show_settings(ctx);
+        self.show_native_confirmation(ctx);
         self.show_lints_toggle(ctx);
         self.show_lint_report(ctx);
 
@@ -1885,33 +1956,7 @@ impl eframe::App for App {
                             }
 
                             if button.clicked() {
-                                let mut mod_configs = Vec::new();
-                                let mut mods = Vec::new();
-                                let active_profile = self.state.mod_data.active_profile.clone();
-                                self.state
-                                    .mod_data
-                                    .for_each_enabled_mod(&active_profile, |mc| {
-                                        mod_configs.push(mc.clone());
-                                    });
-
-                                mod_configs.sort_by_key(|k| -k.priority);
-
-                                for config in mod_configs {
-                                    mods.push(config.spec.clone());
-                                }
-
-                                self.last_action = None;
-                                self.integrate_rid = Some(message::Integrate::send(
-                                    &mut self.request_counter,
-                                    self.state.store.clone(),
-                                    mods,
-                                    self.state.config.drg_pak_path.as_ref().unwrap().clone(),
-                                    self.state.config.deref().into(),
-                                    self.state.config.ue4ssl_zip_path.clone(),
-                                    self.tx.clone(),
-                                    ctx.clone(),
-                                ));
-                                self.problematic_mod_id = None;
+                                self.start_integrate(ctx);
                             }
                         });
 
