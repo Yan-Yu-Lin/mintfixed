@@ -1025,7 +1025,7 @@ impl App {
                             0.0,
                             TextFormat {
                                 color: ui.visuals().text_color(),
-                                underline: Stroke::new(1.0, ui.visuals().text_color()),
+                                underline: Stroke::new(1.0_f32, ui.visuals().text_color()),
                                 ..Default::default()
                             },
                         );
@@ -1060,7 +1060,7 @@ impl App {
                             0.0,
                             TextFormat {
                                 color: ui.visuals().text_color(),
-                                underline: Stroke::new(1.0, ui.visuals().text_color()),
+                                underline: Stroke::new(1.0_f32, ui.visuals().text_color()),
                                 ..Default::default()
                             },
                         );
@@ -2165,12 +2165,10 @@ impl eframe::App for App {
                                 message::ResolveMods::send(self, ctx, self.parse_mods(), false);
                             }
                         }
-                        egui::Event::Text(text) => {
-                            if !is_anything_focused {
-                                self.search_string = text.to_string();
-                                self.scroll_to_match = true;
-                                self.focus_search = true;
-                            }
+                        egui::Event::Text(text) if !is_anything_focused => {
+                            self.search_string = text.to_string();
+                            self.scroll_to_match = true;
+                            self.focus_search = true;
                         }
                         _ => {}
                     }

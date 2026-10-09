@@ -1,4 +1,5 @@
-#![feature(if_let_guard)]
+#![recursion_limit = "256"]
+
 
 pub mod gui;
 pub mod integrate;
