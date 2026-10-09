@@ -127,20 +127,37 @@ impl SortBy {
     }
 }
 
-/// UE4SSL content of a mod file, rescanned only when the file changes.
-fn ue4ssl_kind_cached(
-    cache: &mut HashMap<PathBuf, (Option<SystemTime>, crate::ue4ssl::Ue4sslKind)>,
-    path: PathBuf,
-) -> crate::ue4ssl::Ue4sslKind {
-    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-    if let Some((cached_mtime, kind)) = cache.get(&path)
-        && *cached_mtime == mtime
-    {
-        return *kind;
+/// UE4SSL content of mod files, for the "native"/"js" labels. Each file is scanned once, on a
+/// background thread; the UI only reads the result (no file system access while drawing).
+#[derive(Default)]
+struct Ue4sslKinds {
+    /// `None` = scan in progress.
+    kinds: std::sync::Arc<std::sync::Mutex<HashMap<PathBuf, Option<crate::ue4ssl::Ue4sslKind>>>>,
+}
+
+impl Ue4sslKinds {
+    /// Label for `path`, starting a background scan the first time a path is seen.
+    fn get(&self, ctx: &egui::Context, path: &Path) -> crate::ue4ssl::Ue4sslKind {
+        let mut kinds = self.kinds.lock().unwrap();
+        if let Some(kind) = kinds.get(path) {
+            return kind.unwrap_or_default();
+        }
+        kinds.insert(path.to_path_buf(), None);
+        let (cache, path, ctx) = (self.kinds.clone(), path.to_path_buf(), ctx.clone());
+        tokio::task::spawn_blocking(move || {
+            let kind = crate::ue4ssl::scan_mod_kind(&path).unwrap_or_default();
+            cache.lock().unwrap().insert(path, Some(kind));
+            if kind.any() {
+                ctx.request_repaint();
+            }
+        });
+        Default::default()
     }
-    let kind = crate::ue4ssl::scan_mod_kind(&path).unwrap_or_default();
-    cache.insert(path, (mtime, kind));
-    kind
+
+    /// Forget all results so files are scanned again (after a cache update or reinstall).
+    fn clear(&self) {
+        self.kinds.lock().unwrap().clear();
+    }
 }
 
 /// Marks mods that run code through UE4SS.Lite. Pak-only mods get nothing.
@@ -198,8 +215,8 @@ pub struct App {
     problematic_mod_id: Option<u32>,
     download_ue4ssl_rid: Option<MessageHandle<()>>,
     native_confirmation: Option<Vec<crate::ue4ssl::UnconfirmedNativeMod>>,
-    /// Which UE4SSL parts each mod file has, keyed by the cached file path (with its mtime).
-    ue4ssl_kinds: HashMap<PathBuf, (Option<SystemTime>, crate::ue4ssl::Ue4sslKind)>,
+    /// Which UE4SSL parts each mod file has, for the mod list labels.
+    ue4ssl_kinds: Ue4sslKinds,
 }
 
 #[derive(Default)]
@@ -692,8 +709,7 @@ impl App {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui_mod_tags(ctx, ui, info);
                         if let Some(path) = self.state.store.cached_mod_path(&mc.spec) {
-                            let kind = ue4ssl_kind_cached(&mut self.ue4ssl_kinds, path);
-                            ui_ue4ssl_badge(ui, kind);
+                            ui_ue4ssl_badge(ui, self.ue4ssl_kinds.get(ui.ctx(), &path));
                         }
                     });
                 } else {

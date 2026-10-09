@@ -221,6 +221,8 @@ impl Integrate {
 
     fn receive(self, app: &mut App) {
         if Some(self.rid) == app.integrate_rid.as_ref().map(|r| r.rid) {
+            // mod files may have been (re)downloaded
+            app.ue4ssl_kinds.clear();
             match self.result {
                 Ok(()) => {
                     info!("integration complete");
@@ -346,6 +348,7 @@ impl UpdateCache {
 
     fn receive(self, app: &mut App) {
         if Some(self.rid) == app.update_rid.as_ref().map(|r| r.rid) {
+            app.ue4ssl_kinds.clear();
             match self.result {
                 Ok(()) => {
                     info!("cache update complete");
