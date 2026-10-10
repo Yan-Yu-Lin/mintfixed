@@ -19,6 +19,10 @@ mint's `mod_data.json` and `config.json`:
 Existing mint files are backed up next to themselves before being replaced. Re-running replaces
 the migrated profile and its groups and leaves everything else alone.
 
+MintCat is the source of truth, so a mod that was added only on mint's side (to the migrated
+profile or a "MintCat: ..." group) would silently disappear. If there is any, nothing is written,
+the mods are listed and the exit code is 3; --force writes anyway (--dry-run only lists them).
+
     uv run tools/migrate-from-mintcat.py --dry-run
     uv run tools/migrate-from-mintcat.py --profile-id 2
 """
@@ -37,6 +41,7 @@ from pathlib import Path
 
 GROUP_PREFIX = "MintCat: "
 RESERVED_DLLS = {"dwmapi.dll", "ue4ssl.dll"}
+EXIT_REFUSED = 3
 
 
 def xdg(var: str, default: str) -> Path:
@@ -154,6 +159,39 @@ def mod_spec(mod: dict) -> str | None:
     return None
 
 
+def mod_urls(entries: list[dict], groups: dict[str, dict]) -> set[str]:
+    """spec.url of every mod in a profile's entries, including the mods of its groups."""
+    urls = set()
+    for e in entries:
+        if "group_name" in e:
+            urls |= {m["spec"]["url"] for m in groups.get(e["group_name"], {}).get("mods", [])}
+        elif "spec" in e:
+            urls.add(e["spec"]["url"])
+    return urls
+
+
+def dropped_entries(
+    mod_data: dict, name: str, new_entries: list[dict], new_groups: dict[str, dict]
+) -> list[tuple[str, str]]:
+    """Mods the rewrite would lose: everything in the migrated profile (its own entries and the
+    mods of any group it uses) and in the "MintCat: ..." groups (all of them are replaced),
+    whose URL MintCat does not produce. Returns (where, url) pairs, sorted."""
+    keep = mod_urls(new_entries, new_groups)
+    old_groups = mod_data.get("groups", {})
+    old: dict[str, str] = {}
+    for e in mod_data.get("profiles", {}).get(name, {}).get("mods", []):
+        if "group_name" in e:
+            for m in old_groups.get(e["group_name"], {}).get("mods", []):
+                old.setdefault(m["spec"]["url"], f"group {e['group_name']!r}")
+        elif "spec" in e:
+            old.setdefault(e["spec"]["url"], f"profile {name!r}")
+    for g, v in old_groups.items():
+        if g.startswith(GROUP_PREFIX):
+            for m in v.get("mods", []):
+                old.setdefault(m["spec"]["url"], f"group {g!r}")
+    return sorted((where, url) for url, where in old.items() if url not in keep)
+
+
 def backup(path: Path, stamp: str) -> None:
     if path.exists():
         dest = path.with_name(f"{path.name}.bak-{stamp}")
@@ -171,6 +209,11 @@ def main() -> None:
     ap.add_argument("--pak", help="FSD-WindowsNoEditor.pak (default: MintCat's DRG install path)")
     ap.add_argument("--ue4ssl-zip", type=Path, default=ue4ssl_default)
     ap.add_argument("--dry-run", action="store_true", help="print what would be written, write nothing")
+    ap.add_argument(
+        "--force",
+        action="store_true",
+        help="write even if mods that exist only in mint's copy of the profile would be dropped",
+    )
     args = ap.parse_args()
 
     con = snapshot(args.db)
@@ -242,6 +285,7 @@ def main() -> None:
     )
     if mod_data.get("version") != "0.1.0":
         sys.exit(f"{mod_data_path}: unsupported mod_data version {mod_data.get('version')!r}; open mint once to upgrade it")
+    dropped = dropped_entries(mod_data, name, profile_entries, groups)
     for g in [g for g in mod_data.get("groups", {}) if g.startswith(GROUP_PREFIX)]:
         del mod_data["groups"][g]
     mod_data.setdefault("groups", {}).update(groups)
@@ -286,9 +330,19 @@ def main() -> None:
             for i in items:
                 print(f"    {i}")
 
+    if dropped:
+        print(
+            f"  {len(dropped)} entries exist in mintfixed but not in MintCat and would be dropped:"
+        )
+        for where, url in dropped:
+            print(f"    {url}  ({where})")
+        print("  Add them with `drg-manager add` first, or pass --force to drop them.")
     if args.dry_run:
         print("dry run: nothing written")
         return
+    if dropped and not args.force:
+        print("refused: nothing written", file=sys.stderr)
+        sys.exit(EXIT_REFUSED)
     args.config_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     for path, data in ((mod_data_path, mod_data), (config_path, config)):
